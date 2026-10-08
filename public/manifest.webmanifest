@@ -1,0 +1,19 @@
+{
+  "name": "Market Brief",
+  "short_name": "Brief",
+  "description": "A personal market briefing PWA prototype.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#090A0C",
+  "theme_color": "#090A0C",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/briefmark.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

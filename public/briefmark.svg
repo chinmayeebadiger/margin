@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Market Brief icon">
+  <rect width="128" height="128" rx="24" fill="#090A0C"/>
+  <path d="M24 84h80" stroke="#26292F" stroke-width="8" stroke-linecap="round"/>
+  <path d="M30 78l18-22 17 12 25-34" fill="none" stroke="#F5F5F5" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="30" cy="78" r="6" fill="#4DAA72"/>
+  <circle cx="90" cy="34" r="6" fill="#4DAA72"/>
+</svg>
