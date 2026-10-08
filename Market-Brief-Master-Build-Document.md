@@ -1,265 +1,350 @@
-# Market Brief Product Requirements Document
+# Market Brief Master Build Document
 
-Version 1.0 · 8 October 2026 · Status: build baseline
+Version 1.0 - 8 October 2026 - Status: MVP prototype build plan
 
-Market Brief is a personal, phone-first application for following Indian and global financial news, checking markets, understanding potential impacts, researching companies, and eventually practising swing trading. This document defines the product, user experience, phased scope, and conditions for release. The companion master document defines implementation and the build sequence.
+This document converts the Market Brief PRD into an implementation plan for a final MVP prototype: a mobile-first PWA optimized for iPhone 15 Plus Safari, with no authentication required. The PRD remains the product authority; this document is the build sequence, architecture, data-source plan, and release checklist.
 
-The first production release should support a useful 15–20 minute daily routine. The complete vision includes five sections: Today, Markets, Discover, Watchlist, and Swing Lab. There is no AI tutor, chatbot, daily lesson, quiz, learning curriculum, or learning streak. AI may assist with sourced summaries and market analysis behind the scenes.
+## 1. Build Target
 
-## 1 Product decisions
+Market Brief should ship first as a polished personal PWA prototype that feels like a real daily market briefing app even before every data integration is live.
 
-| Decision | Baseline |
+Baseline decisions:
+
+| Area | Decision |
 |---|---|
-| Primary user | One college student following India and US markets |
-| Primary device | Phone; support both iOS Safari and Android Chrome until device is confirmed |
-| Delivery | Mobile-first Next.js PWA, accessible by URL and installable on the home screen |
-| Design reference | TradingView screenshot color theme only; original news-led layout |
-| Access | Personal account; no public social features |
-| Data | Latest available licensed data; delayed or end-of-day acceptable and explicitly labelled |
-| Cost | Start with fixtures, then free tiers where viable; no guaranteed free live-data or AI service |
-| Trading | Simulation only; no broker connection or real order execution |
-| Build approach | Release small working phases; preserve the full vision in the backlog |
+| Device target | iPhone 15 Plus Safari first; Android Chrome can remain broadly responsive but is not the primary QA device |
+| Delivery | Next.js PWA available by URL and installable to the iPhone home screen |
+| Auth | None for MVP prototype |
+| Persistence | Local-first storage for saves, watchlist, notes, and briefing progress |
+| Stack | Next.js App Router, TypeScript, Tailwind CSS, server routes for API adapters |
+| Design | Dark TradingView-inspired palette from PRD, original news-led layout |
+| Data stance | Fixture-first, then minimal free APIs where licensing and coverage are acceptable |
+| Trading | Simulation/planning only, no broker connection or real orders |
+
+The MVP should not wait for perfect live data. It should make data status visible everywhere and degrade honestly: fixture, delayed, end_of_day, stale, or unavailable.
+
+## 2. MVP Scope
+
+The prototype should include the full daily routine, but only the working sections should be visible in navigation.
+
+### Included
+
+- Today briefing with five to seven ranked stories when fixtures/API data permit.
+- Story detail with What happened, Reported drivers, Potential implications, source links, published time, and summary version metadata.
+- Market snapshot for Nifty 50, Sensex, S&P 500, Nasdaq Composite, gold, Brent crude, USD/INR, and US 10-year yield.
+- Markets screen with compact instrument rows and daily historical line charts when available.
+- Watchlist with add/remove/reorder, instrument identity, exchange, currency, quote state, and notes.
+- Saved items with saved time and cached summary.
+- Calendar for RBI, Fed, inflation, GDP, jobs, and selected earnings events where source data exists.
+- Settings for timezone, data status, offline cache controls, and install guidance.
+- PWA manifest, icons, service worker/offline shell, and iOS install instructions.
+
+### Deferred
+
+- Authentication and cloud sync.
+- Public sharing or social features.
+- Push notifications.
+- Discover/Connect the Dots beyond a small fixture-backed preview.
+- Fundamentals depth for Indian companies.
+- Swing Lab beyond a later standalone calculator.
+- Automated paper-trade simulation and backtesting.
+
+## 3. Information Architecture
+
+MVP bottom navigation:
+
+1. Today
+2. Markets
+3. Watchlist
+4. Saved
+5. Settings
+
+Calendar is reachable from Today and Settings. Search is a header action where needed. Discover and Swing Lab stay out of the tab bar until they have real working screens.
+
+## 4. User Experience Requirements
+
+The interface should be dense, calm, and phone-native. It should not look like a marketing landing page.
+
+Design rules:
+
+- Use the PRD palette: background `#090A0C`, panels `#15171B`, borders `#26292F`, primary text `#F5F5F5`, secondary text `#8B9099`.
+- Use white for primary actions; restrained green/red for market moves with signs or labels.
+- Use Inter or Geist, 15-16 px body text, tabular numerals for prices.
+- Prefer compact rows, dividers, modest corners, sticky section headers where helpful.
+- Avoid gradients, neon, glass effects, decorative illustrations, oversized cards, and chat UI.
+- Keep touch targets at least 44 px where practical.
+- Avoid horizontal page scroll at 360-430 CSS px.
+- Respect iOS safe areas, especially bottom navigation.
+- Text must remain usable with 200 percent zoom.
+
+## 5. Technical Architecture
+
+Suggested structure:
+
+```text
+app/
+  (tabs)/
+    today/
+    markets/
+    watchlist/
+    saved/
+    settings/
+  api/
+    briefing/
+    market-data/
+    calendar/
+components/
+  layout/
+  market/
+  briefing/
+  watchlist/
+  saved/
+lib/
+  data/
+    fixtures/
+    adapters/
+    contracts.ts
+  storage/
+  time/
+  formatting/
+  pwa/
+```
+
+Core principles:
+
+- Define typed contracts before wiring APIs.
+- Use fixtures that exactly match the contracts.
+- Put all vendor calls behind server-side adapters.
+- Never expose API keys in client bundles.
+- Cache responses and preserve source timestamps separately from fetch timestamps.
+- Treat missing or malformed provider data as unavailable, not zero.
+- Keep local persistence behind a small storage layer so cloud sync can be added later.
 
-### Assumptions and unresolved choices
+## 6. Data Contracts
 
-The established palette is authoritative: background #090A0C, panels #15171B, borders #26292F, primary text #F5F5F5, secondary text #8B9099. Exact pixel matching to the screenshot is not required. Phone model, data vendors, notification timing, and any paid-service budget remain undecided. Defaults are Asia/Kolkata display time, India plus US coverage, dark mode, and notifications off.
+Every data object needs enough metadata to support trust labels.
 
-No unselected data vendor should be treated as a committed dependency. The owner approves costs before any paid integration. Research and prototype work can proceed without those decisions.
+Required metadata:
 
-## 2 Problem and goals
+- `source_name`
+- `source_url`
+- `observed_at` for market data or `published_at` for news/events
+- `fetched_at`
+- `availability`: `fixture`, `live`, `delayed`, `end_of_day`, `stale`, or `unavailable`
+- `delay_label`
+- `currency` or `unit` where applicable
+- `timezone`
 
-Financial information is scattered between news sites, market dashboards, company pages, and trading tools. A beginner can see a price change without understanding its context, while large feeds make a short daily routine difficult. Market Brief brings a finite briefing, meaningful market snapshots, relevant company developments, and research tools into one phone interface.
+News summaries additionally require:
 
-The product should help the user answer: What happened? What is reported about why it happened? What might it affect? What deserves follow-up? It should make saving an article or company observation easy and avoid requiring constant screen monitoring.
+- `summary_version`
+- `claim_basis`: `reported`, `analysis`, or `fixture`
+- `source_access`: `metadata_only`, `linked_article`, `official_release`, or `licensed_content`
 
-### Success criteria
+## 7. Minimal Source Plan
 
-These are proposed targets, not measured results:
+Use the smallest source set that gives the most trust. The prototype starts with fixtures and then progressively swaps in these adapters.
 
-- The owner completes a useful briefing in 15–20 minutes on at least four days per week during a two-week pilot.
-- Every displayed quote identifies its source, observation time, and data delay or availability status.
-- Every published story has an original source link and publication time; analysis is visibly separate from reported facts.
-- Watchlist and bookmark changes survive reloads and appear on another signed-in device.
-- The core app works at 360–430 CSS pixels without horizontal page scrolling.
-- Cached saved stories remain readable offline; quotes are marked offline and never look live.
-- No release blocker remains in authentication, data integrity, calculations, or mobile navigation.
+### Recommended primary sources
 
-## 3 User journeys
+| Need | Primary source | Why it is preferred | Free/API status | MVP use |
+|---|---|---|---|---|
+| Market quotes and simple historical prices | Twelve Data | Broad market API with stocks, forex, ETFs, commodities, crypto, and global coverage; Basic plan lists 8 credits/minute and 800/day | Free API key; coverage must be tested for Indian instruments | Primary quote adapter if Nifty/Sensex/USDINR/commodities coverage is acceptable |
+| Global financial news discovery | GDELT DOC/API and Frontpage Graph | Free global news index; useful for finding source links and metadata without republishing full articles | Free JSON APIs | News discovery and dedupe input, not full article storage |
+| Indian macro data | RBI DBIE via Reserve Bank Innovation Hub data API | Public read-only API, JSON/CSV, no key, RBI-source economic and financial tables | Free, no key | Indian macro context and calendar support |
+| RBI official releases | RBI RSS feeds | Official RBI updates with links to full documents | Free RSS | RBI events, monetary policy releases, official source links |
+| US macro/yields | FRED API | Official St. Louis Fed API for economic series and Treasury yield data | Free account/API key | US 10-year yield and macro series |
+| Fed official releases | Federal Reserve RSS feeds | Official Fed announcements and release links | Free RSS | Fed calendar and policy event source links |
+| US company fundamentals, later | SEC EDGAR APIs | Official SEC submissions and extracted XBRL data; no auth/key for public data APIs | Free, no key | Later US company profile/fundamental details |
 
-### Morning routine
+### Source links checked
 
-Open Today, check the briefing date and update status, scan India and overnight US snapshots, read the five most important available stories, inspect one potential impact chain, and save a story for later. A briefing remains finite; related stories are optional.
+- Twelve Data pricing and free-tier limits: https://twelvedata.com/pricing
+- Twelve Data docs/coverage overview: https://twelvedata.com/docs
+- GDELT data and APIs: https://gdeltproject.org/data.html
+- RBI DBIE API docs: https://dev.dbie.rbihub.in/docs/using-the-site
+- RBI RSS feeds: https://www.rbi.org.in/Scripts/rss.aspx
+- FRED API overview: https://fred.stlouisfed.org/docs/api/fred/overview.html
+- Federal Reserve RSS feeds: https://www.federalreserve.gov/feeds/feeds.htm
+- SEC EDGAR APIs: https://www.sec.gov/search-filings/edgar-application-programming-interfaces
+- NSE Indices data subscription note: https://www.niftyindices.com/offerings/data-subscription
 
-### Company research
+## 8. API Requirements
 
-Search by name or ticker, confirm exchange and currency, add the correct instrument to Watchlist, review its latest quote and developments, and record a personal observation. Boeing can be followed alongside Indian companies without confusing USD and INR.
+### Required for fixture MVP
 
-### Event awareness
+No external API is required to ship the first polished PWA prototype. Use local fixtures for:
 
-Open the economic calendar, inspect an RBI or Fed event, view its scheduled time in IST, and read why it may matter. After release, compare actual, forecast, and previous values only if the provider supplies each field.
+- Briefing stories.
+- Market snapshot.
+- Historical chart points.
+- Calendar events.
+- Watchlist instruments.
+- Saved items.
 
-### Later trading practice
+### Required for live-data MVP candidate
 
-Open Swing Lab, create a thesis with entry, stop, target, and capital constraints, review calculated risk, and save a paper plan. An open simulated position and a closed trade remain distinguishable from a draft. Journal the exit and review statistics without placing a real order.
+| API | Required? | Key required? | Notes |
+|---|---:|---:|---|
+| Twelve Data | Yes, if using live/delayed quotes | Yes | Test symbol coverage first. Stay within 800/day Basic limit by caching and batching. |
+| GDELT | Yes, if using live news discovery | No | Use for metadata and links. Do not store full copyrighted articles. |
+| RBI DBIE | Yes, for Indian macro data | No | Public API. Data is not a real-time market feed. |
+| RBI RSS | Yes, for official RBI events/releases | No | Parse RSS and store source URL/published time. |
+| FRED | Yes, for US yields/macro | Yes, free account | Use for DGS10 and selected macro series. |
+| Federal Reserve RSS | Yes, for Fed events/releases | No | Official source links. |
+| SEC EDGAR | Later | No | Use after the MVP for US company facts. |
 
-## 4 Information architecture
+### Likely paid-data trigger
 
-| Section | Purpose | Major destinations |
-|---|---|---|
-| Today | Finite daily briefing | Briefing, stories, overnight recap, upcoming events |
-| Markets | Cross-asset dashboard | India, US, global, commodities, FX, yields, sectors |
-| Discover | Research and relationships | Connect the Dots, sectors, company profiles, trends |
-| Watchlist | Personal company tracking | Lists, instrument detail, news, earnings, notes |
-| Swing Lab | Paper planning and review | Calculator, plans, simulated trades, journal, stats |
+We may need a paid source if:
 
-Settings, saved items, calendar, and search are reached through header actions or relevant section links. Do not add more bottom tabs. Before a later section ships, show only working tabs; retain the five-section target architecture without presenting dead controls.
+- Twelve Data Basic does not cover Nifty 50, Sensex, USD/INR, gold, Brent, or required Indian equities acceptably.
+- The license does not allow the display pattern we need.
+- Rate limits are too tight for daily use after caching.
+- We need reliable official Indian index or exchange data rather than prototype-grade delayed/end-of-day data.
 
-### Screen inventory
+The most likely paid category is Indian exchange/index market data. NSE Indices explicitly offers data subscription products for ongoing and historical index data. The MVP should avoid pretending free Indian exchange data is production-grade until we verify coverage and rights.
 
-Required for the daily release: Today, story detail, Markets, instrument detail, Watchlist, add instrument search, Calendar, Saved, Settings, sign-in, and install guidance. Later screens: Discover overview, impact detail, sector detail, company comparison, research notes, Swing Lab overview, plan editor, trade detail, journal, and statistics.
+## 9. Data Refresh Strategy
 
-## 5 Design and interaction requirements
+Prototype:
 
-Use the confirmed black, charcoal, grey, and white palette. Gains and losses use restrained green and red, with a sign or text label so color is not the only cue. White is the primary action accent. Use Geist or Inter, readable body text around 15–16 px, and tabular numerals for market data.
+- Fixtures load instantly from the app.
+- Show fixture label globally.
+- No scheduled jobs required.
 
-The home screen prioritizes briefings rather than candlesticks. Compact rows, thin dividers, modest corners, and deliberate spacing should carry the design. Avoid gradients, neon, glass effects, decorative illustrations, oversized dashboard tiles, and chat interfaces. Charts belong where they help interpret data; technical charts arrive in Swing Lab.
+Live-data candidate:
 
-- Bottom navigation accounts for the phone safe area and does not cover content.
-- Touch targets should be at least 44 by 44 CSS pixels wherever practical.
-- Filters can scroll horizontally; the page itself must not.
-- Search and forms remain usable with the mobile keyboard open.
-- Back navigation restores filter, scroll, and selection state where practical.
-- Loading skeletons match the content shape; errors contain a useful retry action.
-- Text can enlarge to 200 percent without losing actions or essential content.
-- Support keyboard navigation, visible focus, screen-reader labels, reduced motion, and WCAG AA text contrast.
-- Desktop layouts remain usable, but phone usability determines release acceptance.
+- News: server refresh every 30-60 minutes if deployed scheduler supports it; otherwise manual refresh/cache.
+- Quotes: refresh on demand with a 15-minute cache while a market screen is open.
+- Calendar: refresh every 6 hours or manual daily refresh.
+- Macro data: daily refresh or less frequent depending on series.
 
-## 6 Functional requirements
+Rules:
 
-### FR01 Daily briefing
+- Do not update `observed_at` because a fetch succeeded.
+- Preserve last valid value with stale status after provider failure.
+- Cache per provider and per symbol to protect free-tier limits.
+- Do not compare moves from incompatible sessions.
 
-Show the briefing date, generated or curated time, freshness status, five to seven ranked stories when enough quality stories exist, a compact market snapshot, overnight developments, and relevant upcoming events. Do not pad a quiet day with weak or fabricated stories.
+## 10. Implementation Phases
 
-Each story contains headline, short summary, geography, category, source, publication time, reading-time estimate, and save action. Detail separates What happened, Reported drivers, and Potential implications. Provide original reporting links. The 15-minute mode is an ordered reading flow with progress and resume; it is not a course.
+### Phase 0 - Foundation and contracts
 
-Acceptance: a user can complete and resume the flow; duplicate coverage of one event does not occupy most slots; stale briefing status is visible; missing sources prevent an AI summary from publication.
+Deliverables:
 
-### FR02 News collection and trust
+- Next.js app scaffold.
+- Tailwind theme from PRD palette.
+- TypeScript data contracts.
+- Fixture data files.
+- Local storage wrapper.
+- PWA manifest and icon placeholders.
 
-Ingest permitted feeds or APIs. Group duplicate stories while retaining their sources. Keep published_at separate from ingested_at. Categories include economy, central banks, markets, companies, geopolitics, technology, and policy. India and US stories are prioritized, with wider global coverage when relevant.
+Exit criteria:
 
-Do not infer market causation from price direction alone. Wording such as “may contribute” or “reported driver” is required when appropriate. If a driver is unknown, state that. Summaries must not imply access to article content that was unavailable. Full copyrighted article republication is outside scope.
+- App runs locally.
+- Fixtures render through typed contracts.
+- iPhone 15 Plus viewport has no horizontal page scroll.
 
-Acceptance: every claim can be traced to an allowed input or is labelled as analysis; broken or inaccessible sources do not cause invented replacements; corrections update or withdraw affected summaries.
+### Phase 1 - Polished fixture PWA
 
-### FR03 Market dashboard
+Deliverables:
 
-Daily-release instruments: Nifty 50, Sensex, S&P 500, Nasdaq Composite, gold, Brent crude, USD/INR, and US 10-year Treasury yield. Later additions: Bank Nifty, Dow, Nikkei, Hang Seng, FTSE, silver, EUR/USD, and Indian 10-year yield.
+- Today, story detail, Markets, Watchlist, Saved, Calendar, Settings.
+- Bottom navigation with iOS safe-area support.
+- Save/unsave, watchlist add/remove/reorder, notes, reading progress.
+- Offline shell and cached fixture content.
+- Install guidance for iOS Safari.
 
-Display instrument identity, value, unit or currency, absolute change, percentage change where meaningful, session, observed time, source, delay, and market-open or last-session status. Quote providers must clarify whether gold and oil represent spot, futures, or another benchmark. A futures contract is not silently presented as spot. Yields use percent and basis-point changes rather than stock-style percentages.
+Exit criteria:
 
-Charts start with daily historical lines. Supported ranges depend on provider coverage; do not offer unavailable ranges. “Why did this move?” links relevant coverage and clearly labelled interpretations.
+- A complete 15-20 minute daily routine is possible using fixture data.
+- Reload preserves local state.
+- Fixture mode is unmistakable.
+- Playwright/mobile viewport QA passes.
 
-Acceptance: different time zones do not make yesterday’s US close look like today’s Indian session; missing values are shown as unavailable, never zero; charts have units; unrelated articles are not presented as proven drivers.
+### Phase 2 - Data adapter proof
 
-### FR04 Bookmarks and history
+Deliverables:
 
-Save and unsave stories and impact analyses. Saved items include the original link, original publication time, cached summary version, and saved time. Reading history is private and optional. Search Saved by title or category. Deleted upstream content retains a clear unavailable-source message.
+- Adapter interface for providers.
+- Twelve Data symbol/coverage test page or script.
+- GDELT query prototype with dedupe.
+- RBI RSS and Fed RSS parser.
+- FRED DGS10 fetcher.
+- RBI DBIE search/fetch prototype.
 
-Acceptance: duplicate saves are idempotent; loading or network failure does not falsely confirm success; saved content can be removed; offline saves show pending until synced.
+Exit criteria:
 
-### FR05 Watchlist
+- We know which MVP data can remain free.
+- Gaps are documented by instrument/source.
+- Any paid requirement is explicit before integration.
 
-Search names and symbols with exchange and currency. Add, remove, and reorder instruments. Start with one list; named lists are later. Display quote, change, next earnings when available, and linked developments. Instrument detail includes sector, description, how the business makes money, and later fundamentals with reporting dates.
+### Phase 3 - Live/delayed data integration
 
-Support owner notes. Price alerts and comparison arrive later. No brokerage credentials, holdings import, or portfolio return calculation in the daily release.
+Deliverables:
 
-Acceptance: the same instrument cannot be duplicated in one list; a ticker on another exchange remains a different identity; remove requires an easy undo or confirmation; missing earnings dates are not guessed.
+- Market data adapter wired into Markets and Today.
+- News discovery wired into briefing candidate generation.
+- Official release/calendar ingestion.
+- Data status labels on all live/delayed fields.
+- Provider failure states.
 
-### FR06 Economic calendar
+Exit criteria:
 
-Include important RBI/Fed decisions, inflation, GDP, employment releases, and watched-company earnings where licensed data is available. Filter by date, region, and importance. Store event times in UTC with source timezone metadata; display Asia/Kolkata by default. Distinguish scheduled, tentative, postponed, released, and cancelled events.
+- Free-tier limits are respected under normal use.
+- Source, time, delay, unit, and availability labels appear everywhere.
+- Stale/offline states cannot be confused with live data.
 
-Show actual, forecast, previous, units, and source when supplied. A short context paragraph explains relevance to markets without predicting a certain price outcome.
+### Phase 4 - Prototype hardening
 
-Acceptance: US daylight-saving changes convert correctly; date-only earnings are not given invented hours; revised previous values are identified; unavailable forecasts display a dash with meaning.
+Deliverables:
 
-### FR07 Discover and Connect the Dots
+- Accessibility pass.
+- iPhone Safari install and standalone-mode QA.
+- Performance pass.
+- Error and empty-state pass.
+- Final source/cost note in Settings.
 
-Discover combines sectors, themes, company business profiles, and sourced event-impact analyses. Each impact chain shows event, mechanism, potentially affected asset or sector, direction if defensible, time horizon, uncertainty, and source links. Include alternative outcomes or countervailing factors for material claims.
+Exit criteria:
 
-Example structure: supply disruption risk → possible oil price pressure → higher input costs for some airlines. This is a mechanism illustration, not a claim about current events or a trading signal. Expandable vertical steps should work on a phone; a large graph is optional and not required.
+- MVP is demo-ready and usable as a personal PWA.
+- No unfinished tabs are visible.
+- No provider key leaks to client code.
 
-Acceptance: reported facts and hypothesized effects have different labels; direct links are explainable; confidence labels are qualitative editorial judgements, not invented statistical probabilities; chains can be saved.
+## 11. Testing Plan
 
-### FR08 Sector research and company comparison
+Use automated checks where they catch real risk:
 
-Later releases show sector returns and major movers using a named universe and consistent observation period. A heatmap must define its metric and avoid treating a handful of stocks as a complete sector index. Compare two or three companies within compatible currencies, periods, and sectors where appropriate.
+- Unit tests for data normalization, market formatting, stale status, and Swing Lab formulas when added.
+- Storage tests for idempotent saves and duplicate watchlist prevention.
+- Timezone tests for IST display, US market sessions, RBI/Fed events, and daylight-saving transitions.
+- Playwright tests for iPhone 15 Plus viewport, navigation, save/unsave, watchlist edits, settings, and offline shell.
+- Manual Safari QA for Add to Home Screen and standalone PWA behavior.
 
-Fundamentals identify trailing or forward P/E, diluted EPS where supplied, reporting currency, and financial period. Negative earnings are not shown as a normal positive P/E. Business profiles use dated sources. Revenue, margins, debt, and cash flow appear only when reliable coverage exists.
+## 12. Open Decisions
 
-### FR09 Notifications and recaps
+These do not block the fixture MVP:
 
-Later provide morning/evening briefings, weekly recap, important event reminders, and watchlist price alerts. All are opt-in with quiet hours, category controls, and a daily cap. Do not send every headline. In-app notifications remain the fallback if push is unavailable.
+1. Confirm whether the PWA will be deployed on Vercel or another host.
+2. Decide whether live data is needed in the first demo, or whether fixture MVP plus adapter proof is enough.
+3. Confirm whether a free Twelve Data key and free FRED key can be created for the project.
+4. After coverage testing, decide whether to accept delayed/end-of-day Indian market data or pay for a licensed source.
+5. Decide whether Discover preview should ship in MVP or wait until sourced impact chains are ready.
 
-Acceptance: explicit permission precedes push; duplicate job delivery does not create duplicate alerts; disabled alerts stay disabled; price alerts disclose polling cadence and delay, and never promise instant delivery.
+## 13. Release Checklist
 
-### FR10 Swing Lab planning
+- No authentication is required or shown.
+- The app is optimized for iPhone 15 Plus Safari.
+- The app is installable as a PWA.
+- Bottom navigation does not cover content.
+- All visible controls work.
+- Fixture/live/delayed/stale/unavailable states are clear.
+- All market data has source, observation time, unit/currency, and delay label.
+- All stories have source links and publication times.
+- Reported facts and analysis are visually distinct.
+- Saves, watchlist, notes, and reading progress survive reloads.
+- Offline mode does not make quotes look live.
+- No API key is present in the client bundle.
+- Provider limits and possible paid-data needs are documented in Settings or an internal README.
 
-Introduce a long-equity calculator before automated paper trading. Inputs: account capital, risk percent, entry, stop, target, currency, maximum allocation, and optional cost estimate. Require entry > stop, target > entry, and positive values. Display risk per share, reward per share, risk budget, whole-share quantity, notional exposure, and reward-to-risk.
-
-Quantity is the smaller of risk-limited and cash-limited sizes. Costs can lower quantity further. A stop defines planned risk; it does not guarantee a fill during gaps. Separate INR and USD paper accounts; no implicit FX conversion. Shorting, leverage, options, and fractional shares are excluded initially.
-
-Acceptance: invalid inputs yield actionable errors; zero risk is rejected; rounding cannot exceed capital; quantity zero produces a valid “insufficient budget” state.
-
-### FR11 Paper trades and journal
-
-A draft records thesis, setup, entry, stop, target, planned quantity, and review date. A simulated open trade records fill, time, costs, and data source. Closed trades record exit, result, exit reason, and lesson. Support manual recorded fills before automatic simulation. User-entered and automatically simulated fills have distinct labels.
-
-Later automated simulation must document gap handling, fees, slippage, sessions, corporate actions, and bars that touch both stop and target. Such ambiguous bars use a conservative or explicitly selected convention, never hindsight. No real orders are placed.
-
-Statistics include closed-trade count, wins, losses, breakeven trades, win rate, average gain/loss, net P&L, average R, expectancy, and later drawdown. Do not combine currencies or claim a small sample establishes profitability.
-
-### FR12 Search settings and export
-
-Search news, instruments, and saved research. Preferences include timezone, regions, optional notifications, offline storage, and data status. Export user watchlists, notes, and journal in later phases. Users can sign out and clear locally cached private content. Account deletion removes personal data according to the documented retention policy.
-
-## 7 Data and freshness policy
-
-Every dataset has explicit source, observed_at or published_at, fetched_at, and availability. Availability is one of fixture, live, delayed, end_of_day, stale, or unavailable. A fixture indicator must be visible throughout prototype mode.
-
-Candidate freshness objectives, conditional on licensed coverage: news refreshed every 30–60 minutes, quotes every 15 minutes while the user actively views a market, calendar every six hours, fundamentals daily or after reports. These are planning objectives, not promises. Start with one daily ingestion plus cached on-demand refresh where permitted. Final stale thresholds follow vendor delay, asset sessions, and scheduler capacity; missing freshness metadata is treated as unavailable quality.
-
-On a failed refresh, retain the last valid data with its true time and stale status. Never update observed_at just because a request succeeded. Markets close, news continues, and closed-market status alone is not an error. Do not compare percentage moves from incompatible intervals.
-
-## 8 Nonfunctional requirements
-
-| Area | Release requirement |
-|---|---|
-| Performance | Aim for LCP ≤2.5 seconds, INP ≤200 ms, CLS ≤0.1; validate with mobile lab tests and later field data |
-| Reliability | Core screen renders when a provider fails; each module has independent fallback |
-| Security | Server-only provider secrets; authenticated writes; least-privilege grants and ownership policies |
-| Privacy | Watchlists, notes, journals, and saved items isolated by user; no secrets or private note bodies in logs |
-| Offline | Cached public briefing and saved content available; clear offline state; private caches cleared on sign-out |
-| Installation | Correct manifest, icons, standalone display, HTTPS, and device-tested guidance |
-| Accessibility | Accessible labels, logical focus, contrast, zoom support, non-color indicators |
-| Maintainability | Typed data contracts, provider adapters, migrations, fixtures, meaningful tests |
-| Observability | Job outcomes, data age, upstream failures, app errors, and cost consumption visible to owner |
-
-## 9 Phases and release gates
-
-| Phase | Outcome | Indicative solo effort |
-|---|---|---|
-| 0 | Scope, provider feasibility, route and data contracts | 2–4 working days |
-| 1 | Mobile prototype with labelled fixtures and PWA install | 5–8 working days |
-| 2 | Real daily briefing app with persistence | 10–15 working days |
-| 3 | Discover and sourced market intelligence | 8–12 working days |
-| 4 | Research depth, alerts, recaps, resilient offline sync | 8–12 working days |
-| 5 | Swing planning, manual paper trades, journal and statistics | 10–15 working days |
-| 6 | Automated simulation and optional backtesting | Separate estimate after data feasibility |
-
-These are effort estimates, not dates or guarantees; provider access and available development time can change them. At a few hours per week, calendar duration will be much longer.
-
-Phase 0 exits with documented permitted sources, costs, coverage gaps, and one viable data route. Phase 1 exits after real-phone review, working navigation, meaningful loading/error states, and home-screen installation. Phase 2 is the first useful release: real sourced news, market snapshots, saved items, synced watchlist, calendar, authentication, and tested ownership isolation. Run a two-week personal pilot before expanding.
-
-Phase 3 exits with sourced impact chains, uncertainty labels, sector pages, and validated backend summarization if enabled. Phase 4 exits after notification permission, retry/deduplication, timezone and offline-sync tests. Phase 5 exits after formula and statistics fixtures pass and simulated records cannot be confused with real trades. Phase 6 remains blocked until licensed history and fill semantics are approved and verified.
-
-## 10 Scope exclusions
-
-No AI financial tutor, chat UI, quizzes, lesson feed, or curriculum. No real trading, automated investment advice, options execution, brokerage connection, public community, copy trading, guaranteed predictions, or guaranteed real-time data. Native app-store distribution is not required. Charts are optional research tools, not the visual identity of the home screen.
-
-## 11 Risks and decisions before integration
-
-| Risk | Required response |
-|---|---|
-| Free data lacks global or Indian coverage | Record gaps; reduce coverage or select an approved paid source |
-| News license prohibits stored summaries or reuse | Use permitted metadata and outbound links; change source |
-| AI fabricates relationships | Source-constrained generation, validation, uncertainty labels, withdrawal path |
-| Rate limits or provider outage | Shared cache, bounded refresh, backoff, last-known data |
-| Phone background limits | Server-side jobs; no promise of background refresh from the PWA |
-| Scope growth | Finish the daily release and pilot before later phases |
-| Paper simulation overstates results | Explicit fills, fees, gaps, corporate actions, and ambiguity rules |
-| Free hosting cannot meet timing | Adjust cadence or select a suitable scheduler after budget review |
-
-## 12 Release checklist
-
-- All shipped controls work; unfinished sections are hidden or clearly marked unavailable.
-- Fixture mode cannot appear as real market data.
-- Source, date, units, delay, and uncertainty labels are complete.
-- Reload, duplicate requests, offline use, and upstream failures do not corrupt personal state.
-- Two test accounts cannot read or mutate each other’s personal records.
-- Sign-in and sign-out work in browser and installed PWA.
-- No provider secret is included in client bundles or logs.
-- Phone navigation, safe areas, keyboard, zoom, and external source links are tested.
-- Backup/export plan and rollback steps exist.
-- Usage limits, remaining data gaps, and recurring cost are documented.
-
-## 13 Technical references
-
-Checked 8 October 2026. These references support implementation constraints; the phase design and acceptance thresholds above are product decisions.
-
-- Next.js PWA guide: https://nextjs.org/docs/app/guides/progressive-web-apps
-- Supabase Row Level Security: https://supabase.com/docs/guides/database/postgres/row-level-security
-- Vercel cron usage and pricing: https://vercel.com/docs/cron-jobs/usage-and-pricing
-
-Next.js supports App Router manifests and home-screen installation. Offline caching requires a deliberate service-worker strategy. Supabase security depends on grants as well as ownership policies. Vercel Hobby currently restricts each cron job to daily execution and imprecise timing; frequent or precisely timed updates require another suitable scheduling arrangement.
