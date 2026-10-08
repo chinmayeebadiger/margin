@@ -29,11 +29,11 @@ Without keys, the script still tests GDELT, RBI RSS, Federal Reserve RSS, and RB
 
 | Source | Status | Notes |
 |---|---|---|
-| Twelve Data | Blocked until key | Free key needed before quote coverage can be tested. Target symbols are listed in the script. |
+| Twelve Data | Partially confirmed | With the free key, Gold `XAU/USD` and USD/INR returned quote metadata. Initial symbols for Nifty, Sensex, S&P 500, Nasdaq, and Brent did not match as written and need symbol-search refinement. |
 | GDELT DOC API | Inconclusive / rate-sensitive | Public endpoint was reachable manually but returned rate-limit responses during repeated proof runs. Production use needs cached server refreshes and slow polling. |
 | RBI RSS | Confirmed | Press releases and notifications feeds both returned parseable XML items. |
 | Federal Reserve RSS | Confirmed | Press and monetary feeds both returned parseable XML items. |
-| FRED API | Blocked until key | Free key required for DGS10 and other US macro/yield observations. |
+| FRED API | Confirmed | With the free key, `DGS10` returned recent US 10-year Treasury observations. |
 | RBI DBIE Data API | Confirmed | Public search endpoint returned an inflation-related WPI table from the RBI DBIE data API. |
 
 ## Latest Proof Run
@@ -53,6 +53,13 @@ Result summary:
 - FRED API: blocked because `FRED_API_KEY` is not set.
 - RBI DBIE Data API: ok, search endpoint returned one inflation-related record.
 
+Latest keyed run after adding `.env.local`:
+
+- Twelve Data: partial, `2/7` target instruments returned quote metadata.
+- Twelve Data confirmed: Gold `XAU/USD`, USD/INR.
+- Twelve Data unresolved with current symbols: Nifty 50, Sensex, S&P 500, Nasdaq Composite, Brent crude.
+- FRED API: ok, returned `5` DGS10 observations.
+
 ## Exit Criteria Progress
 
 - [x] Provider adapter interface created.
@@ -65,26 +72,24 @@ Result summary:
 - [x] RBI RSS confirmed with live response.
 - [x] Federal Reserve RSS confirmed with live response.
 - [x] RBI DBIE confirmed with live response.
-- [ ] Twelve Data coverage confirmed with free key.
-- [ ] FRED DGS10 confirmed with free key.
+- [x] FRED DGS10 confirmed with free key.
+- [x] Twelve Data free key confirmed working.
+- [ ] Twelve Data target-symbol coverage fully mapped.
 - [ ] GDELT confirmed under a clean rate-limit window.
 
 ## Current Gaps
 
-- Indian market/index data is still the biggest uncertainty until Twelve Data coverage is tested with a free key.
-- FRED cannot be verified without `FRED_API_KEY`.
+- Indian market/index data is still the biggest uncertainty because the first Twelve Data symbol guesses only confirmed Gold and USD/INR.
+- FRED is viable for US 10-year Treasury yield with the free key.
 - GDELT is useful for discovery and source links, but it must be cached, rate-limited, and should not be treated as a full article-content provider.
 - RBI DBIE is macro/economic data, not live quotes.
 
 ## Next Phase 2 Step
 
-Create free keys for:
-
-- Twelve Data: needed to verify market quote coverage.
-- FRED: needed to verify `DGS10`.
-
-Then rerun:
+Refine Twelve Data symbols using its symbol-search endpoint, then rerun:
 
 ```bash
-TWELVE_DATA_API_KEY=... FRED_API_KEY=... npm run phase2:proof
+npm run phase2:proof
 ```
+
+The keys are stored locally in `.env.local`, which is ignored by git.

@@ -1,4 +1,7 @@
 import { XMLParser } from "fast-xml-parser";
+import dotenv from "dotenv";
+
+dotenv.config({ path: ".env.local", quiet: true });
 
 const checkedAt = new Date().toISOString();
 const timeoutMs = 12000;
