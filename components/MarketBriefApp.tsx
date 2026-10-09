@@ -46,7 +46,7 @@ type CalendarResponse = {
 };
 
 const tabs: Array<{ id: TabId; label: string; icon: typeof Home }> = [
-  { id: "today", label: "Today", icon: Home },
+  { id: "today", label: "Brief", icon: Home },
   { id: "markets", label: "Markets", icon: LineChart },
   { id: "watchlist", label: "Watch", icon: CircleDollarSign },
   { id: "saved", label: "Saved", icon: Bookmark },
@@ -196,8 +196,6 @@ export function MarketBriefApp() {
             <>
               {tab === "today" && (
                 <TodayScreen
-                  instruments={instruments}
-                  events={events}
                   dataMode={dataMode}
                   completedCount={completedCount}
                   progressPercent={progressPercent}
@@ -263,7 +261,7 @@ export function MarketBriefApp() {
 }
 
 function Header({ tab, progressPercent, dataMode }: { tab: TabId; progressPercent: number; dataMode: DataMode }) {
-  const title = tabs.find((item) => item.id === tab)?.label ?? "Today";
+  const title = tabs.find((item) => item.id === tab)?.label ?? "Brief";
 
   return (
     <header className="sticky top-0 z-20 border-b border-line bg-shell/95 px-4 pb-3 pt-[calc(env(safe-area-inset-top)+12px)] backdrop-blur">
@@ -289,8 +287,6 @@ function Header({ tab, progressPercent, dataMode }: { tab: TabId; progressPercen
 }
 
 function TodayScreen({
-  instruments,
-  events,
   dataMode,
   completedCount,
   progressPercent,
@@ -301,8 +297,6 @@ function TodayScreen({
   onComplete,
   onCalendar
 }: {
-  instruments: MarketInstrument[];
-  events: CalendarEvent[];
   dataMode: DataMode;
   completedCount: number;
   progressPercent: number;
@@ -331,10 +325,8 @@ function TodayScreen({
         </div>
       </section>
 
-      <MarketSnapshot instruments={instruments} dataMode={dataMode} compact />
-
       <SectionHeader
-        title="Ranked stories"
+        title="News articles"
         action={
           <button className="flex min-h-11 items-center gap-2 text-sm text-muted" onClick={onCalendar}>
             <CalendarDays size={16} />
@@ -357,14 +349,6 @@ function TodayScreen({
         ))}
       </div>
 
-      <section className="rounded-lg border border-line bg-panel p-4">
-        <p className="text-sm font-semibold">Upcoming</p>
-        <div className="mt-3 space-y-3">
-          {events.slice(0, 2).map((event) => (
-            <CalendarEventRow key={event.id} event={event} />
-          ))}
-        </div>
-      </section>
     </div>
   );
 }
@@ -565,7 +549,7 @@ function CalendarScreen({ events, dataMode, onBack }: { events: CalendarEvent[];
     <div className="space-y-5">
       <button className="flex min-h-11 items-center gap-2 text-sm text-muted" onClick={onBack}>
         <ChevronLeft size={18} />
-        Back to Today
+        Back to Brief
       </button>
 
       <section className="rounded-lg border border-line bg-panel p-4">
@@ -905,21 +889,6 @@ function MiniChart({ instrument }: { instrument: MarketInstrument }) {
         <span>{instrument.history[0]?.date}</span>
         <span>{instrument.history.at(-1)?.date}</span>
       </div>
-    </div>
-  );
-}
-
-function CalendarEventRow({ event }: { event: CalendarEvent }) {
-  return (
-    <div className="rounded-md border border-line bg-panel2 p-3">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <p className="text-sm font-semibold">{event.title}</p>
-          <p className="mt-1 text-xs text-muted">{formatDateTime(event.startsAt)} · {event.region}</p>
-        </div>
-        <StatusPill label={event.importance} tone={event.importance === "high" ? "warn" : "default"} />
-      </div>
-      <p className="mt-2 text-sm leading-5 text-muted">{event.context}</p>
     </div>
   );
 }
