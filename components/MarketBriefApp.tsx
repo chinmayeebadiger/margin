@@ -29,6 +29,21 @@ import { clearState, defaultState, loadState, saveState } from "@/lib/storage";
 
 type TabId = "today" | "markets" | "watchlist" | "saved" | "settings";
 type MarketFilter = "All" | "India" | "US" | "Global";
+type DataMode = "fixture" | "mixed" | "live" | "loading" | "error";
+
+type MarketDataResponse = {
+  instruments: MarketInstrument[];
+  fetchedAt: string;
+  status: "fixture" | "mixed" | "live";
+  notes: string[];
+};
+
+type CalendarResponse = {
+  events: CalendarEvent[];
+  fetchedAt: string;
+  status: "fixture" | "mixed" | "live";
+  notes: string[];
+};
 
 const tabs: Array<{ id: TabId; label: string; icon: typeof Home }> = [
   { id: "today", label: "Today", icon: Home },
@@ -38,12 +53,15 @@ const tabs: Array<{ id: TabId; label: string; icon: typeof Home }> = [
   { id: "settings", label: "Settings", icon: Settings }
 ];
 
-const instrumentLookup = new Map(marketInstruments.map((instrument) => [instrument.id, instrument]));
-
 export function MarketBriefApp() {
   const [tab, setTab] = useState<TabId>("today");
   const [state, setState] = useState<AppState>(defaultState);
   const [hydrated, setHydrated] = useState(false);
+  const [instruments, setInstruments] = useState<MarketInstrument[]>(marketInstruments);
+  const [events, setEvents] = useState<CalendarEvent[]>(calendarEvents);
+  const [dataMode, setDataMode] = useState<DataMode>("loading");
+  const [dataNotes, setDataNotes] = useState<string[]>([]);
+  const [lastFetchedAt, setLastFetchedAt] = useState<string | null>(null);
   const [selectedStoryId, setSelectedStoryId] = useState<string | null>(null);
   const [calendarOpen, setCalendarOpen] = useState(false);
   const [marketFilter, setMarketFilter] = useState<MarketFilter>("All");
@@ -69,10 +87,59 @@ export function MarketBriefApp() {
     setInstallReady(window.matchMedia("(display-mode: standalone)").matches);
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadLiveData() {
+      setDataMode("loading");
+      const notes: string[] = [];
+
+      try {
+        const [marketResponse, calendarResponse] = await Promise.all([
+          fetch("/api/market-data", { cache: "no-store" }),
+          fetch("/api/calendar", { cache: "no-store" })
+        ]);
+
+        if (!marketResponse.ok || !calendarResponse.ok) {
+          throw new Error("One or more data routes failed.");
+        }
+
+        const marketPayload = (await marketResponse.json()) as MarketDataResponse;
+        const calendarPayload = (await calendarResponse.json()) as CalendarResponse;
+
+        if (cancelled) {
+          return;
+        }
+
+        setInstruments(marketPayload.instruments);
+        setEvents(calendarPayload.events);
+        notes.push(...marketPayload.notes, ...calendarPayload.notes);
+        setDataNotes(notes);
+        setLastFetchedAt(marketPayload.fetchedAt);
+        setDataMode(resolveDataMode([marketPayload.status, calendarPayload.status]));
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+
+        setDataMode("error");
+        setDataNotes([error instanceof Error ? error.message : "Live data fetch failed. Fixture fallback is active."]);
+        setLastFetchedAt(null);
+      }
+    }
+
+    loadLiveData();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const selectedStory = useMemo(
     () => briefingStories.find((story) => story.id === selectedStoryId) ?? null,
     [selectedStoryId]
   );
+  const instrumentLookup = useMemo(() => new Map(instruments.map((instrument) => [instrument.id, instrument])), [instruments]);
 
   const completedCount = state.completedStoryIds.length;
   const progressPercent = Math.round((completedCount / briefingStories.length) * 100);
@@ -110,7 +177,7 @@ export function MarketBriefApp() {
   return (
     <main className="min-h-screen bg-shell text-ink">
       <div className="mx-auto flex min-h-screen w-full max-w-[520px] flex-col">
-        <Header tab={tab} progressPercent={progressPercent} />
+        <Header tab={tab} progressPercent={progressPercent} dataMode={dataMode} />
 
         <section className="flex-1 px-4 pb-28 pt-3">
           {selectedStory ? (
@@ -121,13 +188,17 @@ export function MarketBriefApp() {
               onBack={() => setSelectedStoryId(null)}
               onSave={() => toggleSaved(selectedStory.id)}
               onComplete={() => markComplete(selectedStory.id)}
+              instrumentLookup={instrumentLookup}
             />
           ) : calendarOpen ? (
-            <CalendarScreen onBack={() => setCalendarOpen(false)} />
+            <CalendarScreen events={events} dataMode={dataMode} onBack={() => setCalendarOpen(false)} />
           ) : (
             <>
               {tab === "today" && (
                 <TodayScreen
+                  instruments={instruments}
+                  events={events}
+                  dataMode={dataMode}
                   completedCount={completedCount}
                   progressPercent={progressPercent}
                   savedStoryIds={state.savedStories.map((saved) => saved.storyId)}
@@ -139,7 +210,7 @@ export function MarketBriefApp() {
                 />
               )}
               {tab === "markets" && (
-                <MarketsScreen filter={marketFilter} onFilter={setMarketFilter} />
+                <MarketsScreen instruments={instruments} filter={marketFilter} dataMode={dataMode} onFilter={setMarketFilter} />
               )}
               {tab === "watchlist" && (
                 <WatchlistScreen
@@ -179,7 +250,7 @@ export function MarketBriefApp() {
                 />
               )}
               {tab === "settings" && (
-                <SettingsScreen installReady={installReady} onReset={resetLocalState} />
+                <SettingsScreen installReady={installReady} dataMode={dataMode} dataNotes={dataNotes} lastFetchedAt={lastFetchedAt} onReset={resetLocalState} />
               )}
             </>
           )}
@@ -191,7 +262,7 @@ export function MarketBriefApp() {
   );
 }
 
-function Header({ tab, progressPercent }: { tab: TabId; progressPercent: number }) {
+function Header({ tab, progressPercent, dataMode }: { tab: TabId; progressPercent: number; dataMode: DataMode }) {
   const title = tabs.find((item) => item.id === tab)?.label ?? "Today";
 
   return (
@@ -202,7 +273,7 @@ function Header({ tab, progressPercent }: { tab: TabId; progressPercent: number 
           <h1 className="text-[22px] font-semibold leading-tight tracking-normal">{title}</h1>
         </div>
         <div className="flex items-center gap-2">
-          <StatusPill label="Fixture" tone="warn" />
+          <StatusPill label={dataModeLabel(dataMode)} tone={dataMode === "live" ? "default" : "warn"} />
           <IconButton label="Notifications off">
             <Bell size={18} />
           </IconButton>
@@ -218,6 +289,9 @@ function Header({ tab, progressPercent }: { tab: TabId; progressPercent: number 
 }
 
 function TodayScreen({
+  instruments,
+  events,
+  dataMode,
   completedCount,
   progressPercent,
   savedStoryIds,
@@ -227,6 +301,9 @@ function TodayScreen({
   onComplete,
   onCalendar
 }: {
+  instruments: MarketInstrument[];
+  events: CalendarEvent[];
+  dataMode: DataMode;
   completedCount: number;
   progressPercent: number;
   savedStoryIds: string[];
@@ -244,7 +321,7 @@ function TodayScreen({
             <p className="text-sm text-muted">Thursday, 8 Oct 2026 · 10:00 IST</p>
             <h2 className="mt-1 text-xl font-semibold leading-tight">15-minute briefing</h2>
             <p className="mt-2 text-sm leading-6 text-muted">
-              {completedCount} of {briefingStories.length} stories done. All data is labelled as prototype fixture.
+              {completedCount} of {briefingStories.length} stories done. Market data mode: {dataModeLabel(dataMode).toLowerCase()}.
             </p>
           </div>
           <div className="min-w-[64px] rounded-md border border-line bg-panel2 px-2 py-2 text-center">
@@ -254,7 +331,7 @@ function TodayScreen({
         </div>
       </section>
 
-      <MarketSnapshot compact />
+      <MarketSnapshot instruments={instruments} dataMode={dataMode} compact />
 
       <SectionHeader
         title="Ranked stories"
@@ -283,7 +360,7 @@ function TodayScreen({
       <section className="rounded-lg border border-line bg-panel p-4">
         <p className="text-sm font-semibold">Upcoming</p>
         <div className="mt-3 space-y-3">
-          {calendarEvents.slice(0, 2).map((event) => (
+          {events.slice(0, 2).map((event) => (
             <CalendarEventRow key={event.id} event={event} />
           ))}
         </div>
@@ -292,8 +369,8 @@ function TodayScreen({
   );
 }
 
-function MarketSnapshot({ compact = false }: { compact?: boolean }) {
-  const snapshot = marketInstruments.slice(0, compact ? 4 : marketInstruments.length);
+function MarketSnapshot({ instruments, dataMode, compact = false }: { instruments: MarketInstrument[]; dataMode: DataMode; compact?: boolean }) {
+  const snapshot = instruments.slice(0, compact ? 4 : instruments.length);
 
   return (
     <section className="rounded-lg border border-line bg-panel">
@@ -302,7 +379,7 @@ function MarketSnapshot({ compact = false }: { compact?: boolean }) {
           <p className="text-sm font-semibold">Market snapshot</p>
           <p className="text-xs text-muted">Source, time, and delay visible by row</p>
         </div>
-        <StatusPill label="Fixture" tone="warn" />
+        <StatusPill label={dataModeLabel(dataMode)} tone={dataMode === "live" ? "default" : "warn"} />
       </div>
       <div className="divide-y divide-line">
         {snapshot.map((instrument) => (
@@ -369,7 +446,8 @@ function StoryDetail({
   isComplete,
   onBack,
   onSave,
-  onComplete
+  onComplete,
+  instrumentLookup
 }: {
   story: Story;
   isSaved: boolean;
@@ -377,6 +455,7 @@ function StoryDetail({
   onBack: () => void;
   onSave: () => void;
   onComplete: () => void;
+  instrumentLookup: Map<string, MarketInstrument>;
 }) {
   return (
     <article className="space-y-4">
@@ -436,9 +515,19 @@ function StoryDetail({
   );
 }
 
-function MarketsScreen({ filter, onFilter }: { filter: MarketFilter; onFilter: (filter: MarketFilter) => void }) {
+function MarketsScreen({
+  instruments,
+  filter,
+  dataMode,
+  onFilter
+}: {
+  instruments: MarketInstrument[];
+  filter: MarketFilter;
+  dataMode: DataMode;
+  onFilter: (filter: MarketFilter) => void;
+}) {
   const filters: MarketFilter[] = ["All", "India", "US", "Global"];
-  const visible = marketInstruments.filter((instrument) => filter === "All" || instrument.region === filter);
+  const visible = instruments.filter((instrument) => filter === "All" || instrument.region === filter);
 
   return (
     <div className="space-y-5">
@@ -456,7 +545,7 @@ function MarketsScreen({ filter, onFilter }: { filter: MarketFilter; onFilter: (
         ))}
       </div>
 
-      <MarketSnapshot />
+      <MarketSnapshot instruments={instruments} dataMode={dataMode} />
 
       <SectionHeader title="Daily lines" />
       <div className="space-y-3">
@@ -471,7 +560,7 @@ function MarketsScreen({ filter, onFilter }: { filter: MarketFilter; onFilter: (
   );
 }
 
-function CalendarScreen({ onBack }: { onBack: () => void }) {
+function CalendarScreen({ events, dataMode, onBack }: { events: CalendarEvent[]; dataMode: DataMode; onBack: () => void }) {
   return (
     <div className="space-y-5">
       <button className="flex min-h-11 items-center gap-2 text-sm text-muted" onClick={onBack}>
@@ -485,14 +574,14 @@ function CalendarScreen({ onBack }: { onBack: () => void }) {
           <div>
             <h2 className="text-base font-semibold">Economic calendar</h2>
             <p className="mt-2 text-sm leading-6 text-muted">
-              Fixture events use official-source targets and Asia/Kolkata display time. Forecast and actual fields remain blank unless a source supplies them.
+              {dataMode === "loading" ? "Loading official releases." : "Official-source releases and fixture events use Asia/Kolkata display time. Forecast and actual fields remain blank unless a source supplies them."}
             </p>
           </div>
         </div>
       </section>
 
       <div className="space-y-3">
-        {calendarEvents.map((event) => (
+        {events.map((event) => (
           <section key={event.id} className="rounded-lg border border-line bg-panel p-4">
             <div className="flex flex-wrap items-center gap-2">
               <StatusPill label={event.region} />
@@ -669,7 +758,19 @@ function SavedScreen({
   );
 }
 
-function SettingsScreen({ installReady, onReset }: { installReady: boolean; onReset: () => void }) {
+function SettingsScreen({
+  installReady,
+  dataMode,
+  dataNotes,
+  lastFetchedAt,
+  onReset
+}: {
+  installReady: boolean;
+  dataMode: DataMode;
+  dataNotes: string[];
+  lastFetchedAt: string | null;
+  onReset: () => void;
+}) {
   return (
     <div className="space-y-5">
       <section className="rounded-lg border border-line bg-panel p-4">
@@ -678,7 +779,7 @@ function SettingsScreen({ installReady, onReset }: { installReady: boolean; onRe
           <div>
             <h2 className="text-base font-semibold">Prototype data mode</h2>
             <p className="mt-2 text-sm leading-6 text-muted">
-              This build uses fixture data shaped for Twelve Data, GDELT, RBI, FRED, Federal Reserve, and SEC adapters. Quotes are not live.
+              Current mode: {dataModeLabel(dataMode)}. Gold and USD/INR can use Twelve Data, US 10-year can use FRED, and official releases can use RBI/Fed RSS. Unconfirmed markets stay fixture-backed.
             </p>
           </div>
         </div>
@@ -707,9 +808,20 @@ function SettingsScreen({ installReady, onReset }: { installReady: boolean; onRe
           <MetaRow label="Timezone" value="Asia/Kolkata" />
           <MetaRow label="Notifications" value="Off" />
           <MetaRow label="Auth" value="Not required" />
-          <MetaRow label="Deployment" value="Local until prototype review" />
+          <MetaRow label="Data fetched" value={lastFetchedAt ? formatDateTime(lastFetchedAt) : "Fixture fallback"} />
         </dl>
       </section>
+
+      {!!dataNotes.length && (
+        <section className="rounded-lg border border-line bg-panel p-4">
+          <h2 className="text-base font-semibold">Data notes</h2>
+          <ul className="mt-3 space-y-2">
+            {dataNotes.map((note) => (
+              <li key={note} className="text-sm leading-6 text-muted">{note}</li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       <button className="flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-line text-sm text-ink" onClick={onReset}>
         <RotateCcw size={18} />
@@ -918,4 +1030,30 @@ function formatDateTime(value: string) {
     timeStyle: "short",
     timeZone: "Asia/Kolkata"
   }).format(new Date(value));
+}
+
+function resolveDataMode(statuses: Array<"fixture" | "mixed" | "live">): DataMode {
+  if (statuses.every((status) => status === "live")) {
+    return "live";
+  }
+  if (statuses.some((status) => status === "live" || status === "mixed")) {
+    return "mixed";
+  }
+  return "fixture";
+}
+
+function dataModeLabel(mode: DataMode) {
+  if (mode === "loading") {
+    return "Loading";
+  }
+  if (mode === "mixed") {
+    return "Mixed";
+  }
+  if (mode === "live") {
+    return "Live";
+  }
+  if (mode === "error") {
+    return "Fallback";
+  }
+  return "Fixture";
 }
