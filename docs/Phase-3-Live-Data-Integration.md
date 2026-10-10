@@ -33,6 +33,9 @@ Phase 3 wires proven providers into server-side app routes while preserving fixt
 |---|---|---|
 | Gold `XAU/USD` | Twelve Data | Live/delayed route wired |
 | USD/INR | Twelve Data | Live/delayed route wired |
+| S&P 500 `SP500` | FRED | End-of-day route wired |
+| Nasdaq Composite `NASDAQCOM` | FRED | End-of-day route wired |
+| Brent crude `DCOILBRENTEU` | FRED | End-of-day route wired |
 | US 10-year Treasury `DGS10` | FRED | End-of-day route wired |
 | RBI releases | RBI RSS | Live route wired |
 | Fed releases | Federal Reserve RSS | Live route wired |
@@ -41,13 +44,12 @@ Phase 3 wires proven providers into server-side app routes while preserving fixt
 
 - Nifty 50
 - Sensex
-- S&P 500
-- Nasdaq Composite
-- Brent crude
 - Briefing story summaries
 - Watchlist quote details
 
 These stay fixture-backed until symbol coverage and source rights are confirmed. The app must not present unconfirmed symbols as live.
+
+Twelve Data symbol search returned Indian Nifty/Sensex ETFs, not the actual Nifty 50 or Sensex index series. Common direct symbols tested and rejected by Twelve Data include `NIFTY50`, `NIFTY_50`, `NIFTY 50`, `NSEI`, `^NSEI`, `BSESN`, `^BSESN`, and `SENSEX`. The app therefore keeps the true index rows fixture-backed instead of substituting ETF proxies.
 
 ## Verification
 
@@ -72,12 +74,15 @@ Route smoke checks:
 - Live/delayed instruments returned:
   - Gold from Twelve Data
   - USD/INR from Twelve Data
+  - S&P 500 from FRED
+  - Nasdaq Composite from FRED
+  - Brent crude from FRED
   - US 10-year Treasury from FRED
 - `/api/calendar` returned `status: "live"` with RBI and Federal Reserve RSS release items.
 
 ## Remaining Phase 3 Work
 
-- Refine Twelve Data symbol mapping for Nifty 50, Sensex, S&P 500, Nasdaq Composite, and Brent.
+- Find a reliable, licensed/free route for Nifty 50 and Sensex, or mark them unavailable instead of fixture-backed before production use.
 - Add a safe news discovery route only after GDELT rate-limit behavior is stable enough.
 - Decide whether briefing stories should remain curated fixtures or be regenerated from source metadata.
 - Add route-level tests for provider failure and fixture fallback.

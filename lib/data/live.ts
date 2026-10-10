@@ -69,6 +69,43 @@ const liveTargets = {
   timezone: string;
 }>>;
 
+const fredTargets = {
+  sp500: {
+    seriesId: "SP500",
+    sourceUrl: "https://fred.stlouisfed.org/series/SP500",
+    session: "Latest FRED observation",
+    unit: "points",
+    timezone: "America/New_York"
+  },
+  nasdaq: {
+    seriesId: "NASDAQCOM",
+    sourceUrl: "https://fred.stlouisfed.org/series/NASDAQCOM",
+    session: "Latest FRED observation",
+    unit: "points",
+    timezone: "America/New_York"
+  },
+  brent: {
+    seriesId: "DCOILBRENTEU",
+    sourceUrl: "https://fred.stlouisfed.org/series/DCOILBRENTEU",
+    session: "Europe Brent spot price",
+    unit: "USD/bbl",
+    timezone: "UTC"
+  },
+  us10y: {
+    seriesId: "DGS10",
+    sourceUrl: "https://fred.stlouisfed.org/series/DGS10",
+    session: "Latest FRED observation",
+    unit: "%",
+    timezone: "America/New_York"
+  }
+} satisfies Partial<Record<string, {
+  seriesId: string;
+  sourceUrl: string;
+  session: string;
+  unit: string;
+  timezone: string;
+}>>;
+
 const rbiFeeds = [
   "https://rbi.org.in/pressreleases_rss.xml",
   "https://rbi.org.in/notifications_rss.xml"
@@ -149,49 +186,30 @@ export async function getMarketData(): Promise<MarketDataPayload> {
   }
 
   const fredKey = process.env.FRED_API_KEY;
-  const us10y = byId.get("us10y");
   if (!fredKey) {
-    notes.push("FRED_API_KEY is missing; US 10-year yield stayed on fixture.");
-  } else if (us10y) {
-    const observations = await fetchFredObservations("DGS10", fredKey);
-    const numeric = observations
-      .filter((observation) => observation.value !== ".")
-      .map((observation) => ({ date: observation.date, value: Number(observation.value) }))
-      .filter((observation) => Number.isFinite(observation.value));
+    notes.push("FRED_API_KEY is missing; FRED-backed instruments stayed on fixtures.");
+  } else {
+    for (const [id, target] of Object.entries(fredTargets)) {
+      const fixture = byId.get(id);
+      if (!fixture) {
+        continue;
+      }
 
-    const latest = numeric[0];
-    const previous = numeric[1];
-
-    if (latest && previous) {
-      replaceInstrument(instruments, "us10y", {
-        ...us10y,
-        value: latest.value,
-        change: latest.value - previous.value,
-        session: "Latest FRED observation",
-        status: "last_session",
-        meta: {
-          sourceName: "FRED",
-          sourceUrl: "https://fred.stlouisfed.org/series/DGS10",
-          observedAt: `${latest.date}T16:00:00-04:00`,
-          fetchedAt,
-          availability: "end_of_day",
-          delayLabel: "End-of-day series",
-          timezone: "America/New_York"
-        },
-        history: numeric
-          .slice(0, 6)
-          .reverse()
-          .map((point) => ({
-            date: new Intl.DateTimeFormat("en-IN", { month: "short", day: "numeric", timeZone: "UTC" }).format(new Date(`${point.date}T00:00:00Z`)),
-            value: point.value
-          }))
-      });
-    } else {
-      notes.push("US 10-year yield stayed fixture-backed: FRED returned no usable DGS10 observations.");
+      const replacement = await fredSeriesToInstrument(fixture, target, fredKey, fetchedAt);
+      if (replacement) {
+        replaceInstrument(instruments, id, replacement);
+      } else {
+        notes.push(`${fixture.name} stayed fixture-backed: FRED returned no usable ${target.seriesId} observations.`);
+      }
     }
   }
 
   const liveCount = instruments.filter((instrument) => instrument.meta.availability !== "fixture").length;
+  const fixtureIds = instruments.filter((instrument) => instrument.meta.availability === "fixture").map((instrument) => instrument.id);
+
+  if (fixtureIds.includes("nifty50") || fixtureIds.includes("sensex")) {
+    notes.push("Nifty 50 and Sensex remain fixture-backed: Twelve Data did not accept common index symbols, and no free trusted official quote API has been confirmed.");
+  }
 
   return {
     instruments,
@@ -264,6 +282,61 @@ async function fetchFredObservations(seriesId: string, apiKey: string): Promise<
 
   const data = (await response.json()) as { observations?: FredObservation[] };
   return data.observations ?? [];
+}
+
+async function fredSeriesToInstrument(
+  fixture: MarketInstrument,
+  target: {
+    seriesId: string;
+    sourceUrl: string;
+    session: string;
+    unit: string;
+    timezone: string;
+  },
+  apiKey: string,
+  fetchedAt: string
+): Promise<MarketInstrument | null> {
+  const observations = await fetchFredObservations(target.seriesId, apiKey);
+  const numeric = observations
+    .filter((observation) => observation.value !== ".")
+    .map((observation) => ({ date: observation.date, value: Number(observation.value) }))
+    .filter((observation) => Number.isFinite(observation.value));
+
+  const latest = numeric[0];
+  const previous = numeric[1];
+
+  if (!latest || !previous) {
+    return null;
+  }
+
+  const change = latest.value - previous.value;
+  const changePercent = previous.value === 0 ? undefined : (change / previous.value) * 100;
+
+  return {
+    ...fixture,
+    value: latest.value,
+    change,
+    changePercent: fixture.kind === "yield" ? undefined : changePercent,
+    unit: target.unit,
+    session: target.session,
+    status: "last_session",
+    meta: {
+      sourceName: "FRED",
+      sourceUrl: target.sourceUrl,
+      observedAt: `${latest.date}T16:00:00${target.timezone === "UTC" ? "Z" : "-04:00"}`,
+      fetchedAt,
+      availability: "end_of_day",
+      delayLabel: "End-of-day series",
+      timezone: target.timezone
+    },
+    history: numeric
+      .slice(0, 6)
+      .reverse()
+      .map((point) => ({
+        date: new Intl.DateTimeFormat("en-IN", { month: "short", day: "numeric", timeZone: "UTC" }).format(new Date(`${point.date}T00:00:00Z`)),
+        value: point.value
+      }))
+  };
 }
 
 async function fetchFeedItems(feedUrls: string[], notes: string[]) {
