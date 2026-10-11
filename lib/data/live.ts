@@ -37,11 +37,58 @@ type RssFeed = {
   };
 };
 
+type McpResponse = {
+  jsonrpc?: string;
+  id?: number | string;
+  result?: {
+    content?: Array<{
+      type?: string;
+      text?: string;
+    }>;
+    isError?: boolean;
+    [key: string]: unknown;
+  };
+  error?: {
+    code?: number;
+    message?: string;
+  };
+};
+
+type NseMcpSession = {
+  sessionId: string;
+  cookie?: string;
+};
+
+type NseIndexQuote = {
+  value: number;
+  change?: number;
+  changePercent?: number;
+  observedAt?: string;
+};
+
 const xmlParser = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: "",
   trimValues: true
 });
+
+const nseMcpEndpoint = "https://mcp.nseindia.in/cmmkt/mcp";
+
+const nseIndexTargets = {
+  nifty50: {
+    indexName: "NIFTY 50",
+    sourceUrl: "https://www.nseindia.com/market-data/live-equity-market?symbol=NIFTY%2050",
+    session: "NSE regular session",
+    unit: "points",
+    timezone: "Asia/Kolkata"
+  }
+} satisfies Partial<Record<string, {
+  indexName: string;
+  sourceUrl: string;
+  session: string;
+  unit: string;
+  timezone: string;
+}>>;
 
 const liveTargets = {
   gold: {
@@ -136,6 +183,45 @@ export async function getMarketData(): Promise<MarketDataPayload> {
   const byId = new Map(marketInstruments.map((instrument) => [instrument.id, instrument]));
   const instruments = [...marketInstruments];
 
+  const nseSession = await createNseMcpSession(notes);
+  if (!nseSession) {
+    notes.push("NSE official MCP was unavailable; NSE index rows stayed on fixtures.");
+  } else {
+    for (const [id, target] of Object.entries(nseIndexTargets)) {
+      const fixture = byId.get(id);
+      if (!fixture) {
+        continue;
+      }
+
+      const quote = await fetchNseIndexQuote(target.indexName, nseSession, notes);
+      if (!quote) {
+        notes.push(`${fixture.name} stayed fixture-backed: NSE MCP did not return a usable ${target.indexName} quote.`);
+        continue;
+      }
+
+      replaceInstrument(instruments, id, {
+        ...fixture,
+        symbol: target.indexName,
+        value: quote.value,
+        change: quote.change ?? fixture.change,
+        changePercent: quote.changePercent ?? fixture.changePercent,
+        unit: target.unit,
+        session: target.session,
+        status: isNseMarketOpen() ? "open" : "last_session",
+        meta: {
+          sourceName: "NSE official MCP",
+          sourceUrl: target.sourceUrl,
+          observedAt: quote.observedAt,
+          fetchedAt,
+          availability: isNseMarketOpen() ? "live" : "stale",
+          delayLabel: "NSE official MCP index quote",
+          timezone: target.timezone
+        },
+        history: appendHistory(fixture, quote.observedAt, quote.value)
+      });
+    }
+  }
+
   const twelveKey = process.env.TWELVE_DATA_API_KEY;
 
   if (!twelveKey) {
@@ -207,8 +293,12 @@ export async function getMarketData(): Promise<MarketDataPayload> {
   const liveCount = instruments.filter((instrument) => instrument.meta.availability !== "fixture").length;
   const fixtureIds = instruments.filter((instrument) => instrument.meta.availability === "fixture").map((instrument) => instrument.id);
 
-  if (fixtureIds.includes("nifty50") || fixtureIds.includes("sensex")) {
-    notes.push("Nifty 50 and Sensex remain fixture-backed: Twelve Data did not accept common index symbols, and no free trusted official quote API has been confirmed.");
+  if (fixtureIds.includes("nifty50")) {
+    notes.push("Nifty 50 remains fixture-backed: NSE official MCP did not return a usable quote during this fetch.");
+  }
+
+  if (fixtureIds.includes("sensex")) {
+    notes.push("Sensex remains fixture-backed: NSE official MCP does not cover BSE Sensex, and no free trusted BSE quote API has been confirmed.");
   }
 
   return {
@@ -265,6 +355,298 @@ async function fetchTwelveQuote(symbol: string, apiKey: string): Promise<TwelveQ
   }
 
   return response.json() as Promise<TwelveQuote>;
+}
+
+async function createNseMcpSession(notes: string[]): Promise<NseMcpSession | null> {
+  const response = await postNseMcp({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "initialize",
+    params: {
+      protocolVersion: "2024-11-05",
+      capabilities: {},
+      clientInfo: {
+        name: "market-brief-prototype",
+        version: "0.1.0"
+      }
+    }
+  });
+
+  if (!response?.ok) {
+    notes.push(`NSE MCP initialize failed: ${response?.error ?? `HTTP ${response?.response?.status ?? "unknown"}`}.`);
+    return null;
+  }
+
+  const sessionId = response.response?.headers.get("mcp-session-id");
+  if (!sessionId) {
+    notes.push("NSE MCP initialize did not return a session id.");
+    return null;
+  }
+
+  const cookie = response.response?.headers.get("set-cookie")?.split(";")[0];
+  return { sessionId, cookie };
+}
+
+async function fetchNseIndexQuote(indexName: string, session: NseMcpSession, notes: string[]): Promise<NseIndexQuote | null> {
+  const response = await postNseMcp(
+    {
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: {
+        name: "cm_get_index_quote",
+        arguments: { indexName }
+      }
+    },
+    session
+  );
+
+  const payload = response?.payload;
+  if (!payload || payload.error || payload.result?.isError) {
+    notes.push(`NSE MCP quote failed for ${indexName}: ${payload?.error?.message ?? response?.error ?? `HTTP ${response?.response?.status ?? "unknown"}`}.`);
+    return null;
+  }
+
+  const quote = extractNseIndexQuote(payload);
+  return quote;
+}
+
+async function postNseMcp(
+  body: Record<string, unknown>,
+  session?: Partial<NseMcpSession>,
+  timeoutMs = 6500
+): Promise<{ ok: boolean; response?: Response; payload: McpResponse | null; error?: string } | null> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+      "user-agent": "MarketBrief/0.1"
+    };
+
+    if (session?.sessionId) {
+      headers["mcp-session-id"] = session.sessionId;
+    }
+
+    if (session?.cookie) {
+      headers.cookie = session.cookie;
+    }
+
+    const response = await fetch(nseMcpEndpoint, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal: controller.signal,
+      cache: "no-store"
+    });
+
+    const text = await response.text();
+    return {
+      ok: response.ok,
+      response,
+      payload: parseMcpResponse(text)
+    };
+  } catch {
+    return {
+      ok: false,
+      payload: null,
+      error: "fetch failed"
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function parseMcpResponse(text: string): McpResponse | null {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(trimmed) as McpResponse;
+  } catch {
+    const dataLine = trimmed
+      .split("\n")
+      .map((line) => line.trim())
+      .find((line) => line.startsWith("data:"));
+
+    if (!dataLine) {
+      return null;
+    }
+
+    try {
+      return JSON.parse(dataLine.replace(/^data:\s*/, "")) as McpResponse;
+    } catch {
+      return null;
+    }
+  }
+}
+
+function extractNseIndexQuote(payload: McpResponse): NseIndexQuote | null {
+  const textBlocks = payload.result?.content?.map((item) => item.text).filter(Boolean) ?? [];
+  const candidates: unknown[] = [payload.result, ...textBlocks];
+
+  for (const candidate of candidates) {
+    const quote = parseNseQuoteCandidate(candidate);
+    if (quote) {
+      return quote;
+    }
+  }
+
+  return null;
+}
+
+function parseNseQuoteCandidate(candidate: unknown): NseIndexQuote | null {
+  if (typeof candidate === "string") {
+    const parsed = parseJsonish(candidate);
+    if (parsed) {
+      return parseNseQuoteCandidate(parsed);
+    }
+
+    return parseNseQuoteText(candidate);
+  }
+
+  const objects = flattenObjects(candidate);
+  for (const object of objects) {
+    const normalized = normalizeKeys(object);
+    const value = pickNumber(normalized, ["lastprice", "last", "ltp", "indexvalue", "lasttradedprice", "close", "value"]);
+    if (!Number.isFinite(value) || value <= 0) {
+      continue;
+    }
+
+    return {
+      value,
+      change: pickOptionalNumber(normalized, ["change", "netchange", "chng", "pointchange"]),
+      changePercent: pickOptionalNumber(normalized, ["pchange", "percchange", "percentchange", "perchange", "changepercent"]),
+      observedAt: pickDate(normalized, ["nsetimestamp", "timestamp", "lastupdated", "lastupdatedtime", "datetime", "time", "timeval"])
+    };
+  }
+
+  return null;
+}
+
+function parseJsonish(value: string): unknown | null {
+  const trimmed = value.trim();
+  const start = trimmed.search(/[\[{]/);
+  if (start < 0) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(trimmed.slice(start));
+  } catch {
+    return null;
+  }
+}
+
+function parseNseQuoteText(text: string): NseIndexQuote | null {
+  const value = matchNumber(text, /(?:last price|last|ltp|index value|value)\D+([\d,]+(?:\.\d+)?)/i);
+  if (!Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+
+  return {
+    value,
+    change: matchOptionalNumber(text, /(?:change|net change)\D+(-?[\d,]+(?:\.\d+)?)/i),
+    changePercent: matchOptionalNumber(text, /(?:pchange|percent change|% change)\D+(-?[\d,]+(?:\.\d+)?)/i)
+  };
+}
+
+function flattenObjects(value: unknown): Array<Record<string, unknown>> {
+  if (!value || typeof value !== "object") {
+    return [];
+  }
+
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => flattenObjects(item));
+  }
+
+  const object = value as Record<string, unknown>;
+  return [object, ...Object.values(object).flatMap((item) => flattenObjects(item))];
+}
+
+function normalizeKeys(object: Record<string, unknown>) {
+  return Object.fromEntries(
+    Object.entries(object).map(([key, value]) => [key.toLowerCase().replace(/[^a-z0-9]/g, ""), value])
+  );
+}
+
+function pickNumber(object: Record<string, unknown>, keys: string[]) {
+  return pickOptionalNumber(object, keys) ?? Number.NaN;
+}
+
+function pickOptionalNumber(object: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const value = object[key];
+    if (value === undefined || value === null || value === "") {
+      continue;
+    }
+
+    const numeric = typeof value === "number" ? value : Number(String(value ?? "").replace(/,/g, ""));
+    if (Number.isFinite(numeric)) {
+      return numeric;
+    }
+  }
+
+  return undefined;
+}
+
+function pickDate(object: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const value = object[key];
+    if (!value) {
+      continue;
+    }
+
+    const date = new Date(String(value));
+    if (Number.isFinite(date.getTime())) {
+      return date.toISOString();
+    }
+  }
+
+  return undefined;
+}
+
+function matchNumber(text: string, pattern: RegExp) {
+  return matchOptionalNumber(text, pattern) ?? Number.NaN;
+}
+
+function matchOptionalNumber(text: string, pattern: RegExp) {
+  const match = text.match(pattern);
+  if (!match?.[1]) {
+    return undefined;
+  }
+
+  const numeric = Number(match[1].replace(/,/g, ""));
+  return Number.isFinite(numeric) ? numeric : undefined;
+}
+
+function isNseMarketOpen(now = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Kolkata",
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  }).formatToParts(now);
+
+  const weekday = parts.find((part) => part.type === "weekday")?.value;
+  const hour = Number(parts.find((part) => part.type === "hour")?.value);
+  const minute = Number(parts.find((part) => part.type === "minute")?.value);
+
+  if (!weekday || !Number.isFinite(hour) || !Number.isFinite(minute)) {
+    return false;
+  }
+
+  if (weekday === "Sat" || weekday === "Sun") {
+    return false;
+  }
+
+  const current = hour * 60 + minute;
+  return current >= 9 * 60 + 15 && current <= 15 * 60 + 30;
 }
 
 async function fetchFredObservations(seriesId: string, apiKey: string): Promise<FredObservation[]> {
@@ -389,8 +771,9 @@ function rssItemToEvent(
 }
 
 function appendHistory(fixture: MarketInstrument, date: string | undefined, value: number) {
-  const label = date
-    ? new Intl.DateTimeFormat("en-IN", { month: "short", day: "numeric", timeZone: "UTC" }).format(new Date(`${date}T00:00:00Z`))
+  const parsedDate = date ? new Date(date.includes("T") ? date : `${date}T00:00:00Z`) : null;
+  const label = parsedDate && Number.isFinite(parsedDate.getTime())
+    ? new Intl.DateTimeFormat("en-IN", { month: "short", day: "numeric", timeZone: "UTC" }).format(parsedDate)
     : "Latest";
 
   return [...fixture.history.slice(-5), { date: label, value }];

@@ -8,7 +8,7 @@ Phase 3 wires proven providers into server-side app routes while preserving fixt
 
 - `app/api/market-data/route.ts`
   - Server-only route for market data.
-  - Uses `TWELVE_DATA_API_KEY` and `FRED_API_KEY` from `.env.local`.
+  - Uses NSE official MCP without auth for Nifty 50, plus `TWELVE_DATA_API_KEY` and `FRED_API_KEY` from `.env.local`.
   - Returns normalized `MarketInstrument[]`.
 
 - `app/api/calendar/route.ts`
@@ -18,7 +18,8 @@ Phase 3 wires proven providers into server-side app routes while preserving fixt
 
 - `lib/data/live.ts`
   - Provider fetchers and normalization logic.
-  - Fixture fallback for missing keys, malformed upstream data, and unconfirmed instruments.
+  - NSE MCP session creation and `cm_get_index_quote` call for `NIFTY 50`.
+  - Fixture fallback for missing keys, upstream timeouts, malformed upstream data, and unconfirmed instruments.
 
 - `components/MarketBriefApp.tsx`
   - Fetches `/api/market-data` and `/api/calendar` after load.
@@ -31,6 +32,7 @@ Phase 3 wires proven providers into server-side app routes while preserving fixt
 
 | Item | Source | Status |
 |---|---|---|
+| Nifty 50 | NSE official MCP | Official MCP route wired with fixture fallback |
 | Gold `XAU/USD` | Twelve Data | Live/delayed route wired |
 | USD/INR | Twelve Data | Live/delayed route wired |
 | S&P 500 `SP500` | FRED | End-of-day route wired |
@@ -42,14 +44,15 @@ Phase 3 wires proven providers into server-side app routes while preserving fixt
 
 ## Still Fixture-Backed
 
-- Nifty 50
 - Sensex
 - Briefing story summaries
 - Watchlist quote details
 
 These stay fixture-backed until symbol coverage and source rights are confirmed. The app must not present unconfirmed symbols as live.
 
-Twelve Data symbol search returned Indian Nifty/Sensex ETFs, not the actual Nifty 50 or Sensex index series. Common direct symbols tested and rejected by Twelve Data include `NIFTY50`, `NIFTY_50`, `NIFTY 50`, `NSEI`, `^NSEI`, `BSESN`, `^BSESN`, and `SENSEX`. The app therefore keeps the true index rows fixture-backed instead of substituting ETF proxies.
+NSE official MCP initializes as `cm-market-mcp` and describes live index values refreshed every 1 minute, including `cm_get_index_quote` for exact names such as `NIFTY 50`. The adapter now attempts that path first and falls back to fixtures if NSE times out or returns an unexpected payload.
+
+Sensex remains fixture-backed because it is a BSE index. NSE official MCP should not be used to claim BSE coverage. Twelve Data symbol search returned Indian Nifty/Sensex ETFs, not the actual Nifty 50 or Sensex index series. Common direct symbols tested and rejected by Twelve Data include `NIFTY50`, `NIFTY_50`, `NIFTY 50`, `NSEI`, `^NSEI`, `BSESN`, `^BSESN`, and `SENSEX`. The app therefore keeps the true Sensex row fixture-backed instead of substituting ETF proxies.
 
 ## Verification
 
@@ -72,6 +75,7 @@ Route smoke checks:
 
 - `/api/market-data` returned `status: "mixed"`.
 - Live/delayed instruments returned:
+  - Nifty 50 from NSE official MCP. On 11 October 2026, the route returned `22520.45`, change `288.65`, and percent change `1.3`; it was labelled `stale` because the fetch happened on Sunday outside NSE market hours.
   - Gold from Twelve Data
   - USD/INR from Twelve Data
   - S&P 500 from FRED
@@ -82,7 +86,8 @@ Route smoke checks:
 
 ## Remaining Phase 3 Work
 
-- Find a reliable, licensed/free route for Nifty 50 and Sensex, or mark them unavailable instead of fixture-backed before production use.
+- Confirm a reliable free BSE/Sensex route, or mark Sensex unavailable instead of fixture-backed before production use.
+- Add a route-level mock for NSE official MCP so `cm_get_index_quote` parsing can be tested without depending on the live MCP edge. The live parser already handles MCP JSON and `text/event-stream` responses, nested NSE `index.last`, `index.change`, `index.percChange`, and NSE timestamp fields.
 - Add a safe news discovery route only after GDELT rate-limit behavior is stable enough.
 - Decide whether briefing stories should remain curated fixtures or be regenerated from source metadata.
 - Add route-level tests for provider failure and fixture fallback.

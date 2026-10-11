@@ -763,7 +763,7 @@ function SettingsScreen({
           <div>
             <h2 className="text-base font-semibold">Prototype data mode</h2>
             <p className="mt-2 text-sm leading-6 text-muted">
-              Current mode: {dataModeLabel(dataMode)}. Gold and USD/INR can use Twelve Data, US 10-year can use FRED, and official releases can use RBI/Fed RSS. Unconfirmed markets stay fixture-backed.
+              Current mode: {dataModeLabel(dataMode)}. Nifty 50 can use NSE official MCP, Gold and USD/INR can use Twelve Data, US 10-year can use FRED, and official releases can use RBI/Fed RSS. Unconfirmed markets stay fixture-backed.
             </p>
           </div>
         </div>
