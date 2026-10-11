@@ -1,6 +1,11 @@
 import { XMLParser } from "fast-xml-parser";
-import type { CalendarEvent, MarketInstrument } from "@/lib/contracts";
-import { calendarEvents, marketInstruments } from "@/lib/fixtures";
+import { Agent, fetch as fetchNseTransport } from "undici";
+import { createHash } from "node:crypto";
+import type { CalendarEvent, MarketInstrument, Story } from "@/lib/contracts";
+import {
+  marketCatalog as marketInstruments,
+  starterWatchlist
+} from "@/lib/catalog";
 
 type TwelveQuote = {
   symbol?: string;
@@ -26,6 +31,7 @@ type RssItem = {
   title?: string;
   link?: string;
   pubDate?: string;
+  description?: string;
 };
 
 type RssFeed = {
@@ -73,22 +79,30 @@ const xmlParser = new XMLParser({
 });
 
 const nseMcpEndpoint = "https://mcp.nseindia.in/cmmkt/mcp";
+// This edge can stall on IPv6; scope IPv4 selection to NSE rather than changing process-wide DNS.
+const nseDispatcher = new Agent({ connect: { family: 4 } });
 
 const nseIndexTargets = {
   nifty50: {
     indexName: "NIFTY 50",
-    sourceUrl: "https://www.nseindia.com/market-data/live-equity-market?symbol=NIFTY%2050",
+    sourceUrl:
+      "https://www.nseindia.com/market-data/live-equity-market?symbol=NIFTY%2050",
     session: "NSE regular session",
     unit: "points",
     timezone: "Asia/Kolkata"
   }
-} satisfies Partial<Record<string, {
-  indexName: string;
-  sourceUrl: string;
-  session: string;
-  unit: string;
-  timezone: string;
-}>>;
+} satisfies Partial<
+  Record<
+    string,
+    {
+      indexName: string;
+      sourceUrl: string;
+      session: string;
+      unit: string;
+      timezone: string;
+    }
+  >
+>;
 
 const liveTargets = {
   gold: {
@@ -107,14 +121,19 @@ const liveTargets = {
     sourceUrl: "https://twelvedata.com/docs",
     timezone: "Asia/Kolkata"
   }
-} satisfies Partial<Record<string, {
-  providerSymbol: string;
-  unit: string;
-  session: string;
-  sourceName: string;
-  sourceUrl: string;
-  timezone: string;
-}>>;
+} satisfies Partial<
+  Record<
+    string,
+    {
+      providerSymbol: string;
+      unit: string;
+      session: string;
+      sourceName: string;
+      sourceUrl: string;
+      timezone: string;
+    }
+  >
+>;
 
 const fredTargets = {
   sp500: {
@@ -145,13 +164,18 @@ const fredTargets = {
     unit: "%",
     timezone: "America/New_York"
   }
-} satisfies Partial<Record<string, {
-  seriesId: string;
-  sourceUrl: string;
-  session: string;
-  unit: string;
-  timezone: string;
-}>>;
+} satisfies Partial<
+  Record<
+    string,
+    {
+      seriesId: string;
+      sourceUrl: string;
+      session: string;
+      unit: string;
+      timezone: string;
+    }
+  >
+>;
 
 const rbiFeeds = [
   "https://rbi.org.in/pressreleases_rss.xml",
@@ -166,145 +190,193 @@ const fedFeeds = [
 export type MarketDataPayload = {
   instruments: MarketInstrument[];
   fetchedAt: string;
-  status: "fixture" | "mixed" | "live";
+  status: "unavailable" | "mixed" | "live";
   notes: string[];
 };
 
 export type CalendarPayload = {
   events: CalendarEvent[];
   fetchedAt: string;
-  status: "fixture" | "mixed" | "live";
+  status: "unavailable" | "mixed" | "live";
   notes: string[];
 };
 
 export async function getMarketData(): Promise<MarketDataPayload> {
   const fetchedAt = new Date().toISOString();
   const notes: string[] = [];
-  const byId = new Map(marketInstruments.map((instrument) => [instrument.id, instrument]));
-  const instruments = [...marketInstruments];
+  const byId = new Map(
+    marketInstruments.map((instrument) => [instrument.id, instrument])
+  );
+  const instruments = marketInstruments.map((instrument) =>
+    unavailableInstrument(instrument, fetchedAt)
+  );
 
-  const nseSession = await createNseMcpSession(notes);
-  if (!nseSession) {
-    notes.push("NSE official MCP was unavailable; NSE index rows stayed on fixtures.");
-  } else {
-    for (const [id, target] of Object.entries(nseIndexTargets)) {
-      const fixture = byId.get(id);
-      if (!fixture) {
-        continue;
+  const nseTask = (async () => {
+    const nseSession = await createNseMcpSession(notes);
+    if (!nseSession) {
+      notes.push(
+        "NSE official MCP was unavailable; NSE index quotes are unavailable."
+      );
+    } else {
+      for (const [id, target] of Object.entries(nseIndexTargets)) {
+        const fixture = byId.get(id);
+        if (!fixture) {
+          continue;
+        }
+
+        const quote = await fetchNseIndexQuote(
+          target.indexName,
+          nseSession,
+          notes
+        );
+        if (!quote) {
+          notes.push(`${fixture.name}: NSE MCP did not return a usable quote.`);
+          continue;
+        }
+
+        replaceInstrument(instruments, id, {
+          ...fixture,
+          symbol: target.indexName,
+          value: quote.value,
+          change: quote.change ?? null,
+          changePercent: quote.changePercent,
+          unit: target.unit,
+          session: target.session,
+          status: isNseMarketOpen() ? "open" : "last_session",
+          meta: {
+            sourceName: "NSE official MCP",
+            sourceUrl: target.sourceUrl,
+            observedAt: quote.observedAt,
+            fetchedAt,
+            availability:
+              quote.observedAt &&
+              Date.now() - Date.parse(quote.observedAt) < 5 * 60_000 &&
+              isNseMarketOpen()
+                ? "delayed"
+                : "stale",
+            delayLabel: "Delayed NSE quote · up to 15-minute app cache",
+            timezone: target.timezone
+          },
+          history: []
+        });
       }
-
-      const quote = await fetchNseIndexQuote(target.indexName, nseSession, notes);
-      if (!quote) {
-        notes.push(`${fixture.name} stayed fixture-backed: NSE MCP did not return a usable ${target.indexName} quote.`);
-        continue;
-      }
-
-      replaceInstrument(instruments, id, {
-        ...fixture,
-        symbol: target.indexName,
-        value: quote.value,
-        change: quote.change ?? fixture.change,
-        changePercent: quote.changePercent ?? fixture.changePercent,
-        unit: target.unit,
-        session: target.session,
-        status: isNseMarketOpen() ? "open" : "last_session",
-        meta: {
-          sourceName: "NSE official MCP",
-          sourceUrl: target.sourceUrl,
-          observedAt: quote.observedAt,
-          fetchedAt,
-          availability: isNseMarketOpen() ? "live" : "stale",
-          delayLabel: "NSE official MCP index quote",
-          timezone: target.timezone
-        },
-        history: appendHistory(fixture, quote.observedAt, quote.value)
-      });
     }
-  }
+  })();
 
   const twelveKey = process.env.TWELVE_DATA_API_KEY;
 
-  if (!twelveKey) {
-    notes.push("TWELVE_DATA_API_KEY is missing; Twelve Data-backed instruments stayed on fixtures.");
-  } else {
-    for (const [id, target] of Object.entries(liveTargets)) {
-      const fixture = byId.get(id);
-      if (!fixture) {
-        continue;
-      }
+  const twelveTask = (async () => {
+    if (!twelveKey) {
+      notes.push(
+        "TWELVE_DATA_API_KEY is missing; Twelve Data quotes are unavailable."
+      );
+    } else {
+      await Promise.all(
+        Object.entries(liveTargets).map(async ([id, target]) => {
+          const fixture = byId.get(id);
+          if (!fixture) {
+            return;
+          }
 
-      const quote = await fetchTwelveQuote(target.providerSymbol, twelveKey);
-      if (!quote || quote.code || quote.message) {
-        notes.push(`${fixture.name} stayed fixture-backed: ${quote?.message ?? "Twelve Data quote unavailable"}.`);
-        continue;
-      }
+          const quote = await fetchTwelveQuote(
+            target.providerSymbol,
+            twelveKey
+          );
+          if (!quote || quote.code || quote.message) {
+            notes.push(`${fixture.name}: Twelve Data quote unavailable.`);
+            return;
+          }
 
-      const value = Number(quote.close);
-      const change = Number(quote.change);
-      const changePercent = Number(quote.percent_change);
+          const value = pickOptionalNumber(quote as Record<string, unknown>, [
+            "close"
+          ]);
+          const change = pickOptionalNumber(quote as Record<string, unknown>, [
+            "change"
+          ]);
+          const changePercent = pickOptionalNumber(
+            quote as Record<string, unknown>,
+            ["percent_change"]
+          );
 
-      if (!Number.isFinite(value) || !Number.isFinite(change)) {
-        notes.push(`${fixture.name} stayed fixture-backed: malformed Twelve Data quote.`);
-        continue;
-      }
+          if (value === undefined || value <= 0) {
+            notes.push(`${fixture.name}: malformed Twelve Data quote.`);
+            return;
+          }
 
-      replaceInstrument(instruments, id, {
-        ...fixture,
-        symbol: quote.symbol ?? target.providerSymbol,
-        value,
-        change,
-        changePercent: Number.isFinite(changePercent) ? changePercent : fixture.changePercent,
-        unit: target.unit,
-        session: target.session,
-        status: quote.is_market_open ? "open" : "last_session",
-        meta: {
-          sourceName: target.sourceName,
-          sourceUrl: target.sourceUrl,
-          observedAt: quote.last_quote_at ? new Date(quote.last_quote_at * 1000).toISOString() : quote.datetime,
-          fetchedAt,
-          availability: "delayed",
-          delayLabel: "Free API delayed quote",
-          timezone: target.timezone
-        },
-        history: appendHistory(fixture, quote.datetime, value)
-      });
+          replaceInstrument(instruments, id, {
+            ...fixture,
+            symbol: quote.symbol ?? target.providerSymbol,
+            value,
+            change: change ?? null,
+            changePercent,
+            unit: target.unit,
+            session: target.session,
+            status: quote.is_market_open ? "open" : "last_session",
+            meta: {
+              sourceName: target.sourceName,
+              sourceUrl: target.sourceUrl,
+              observedAt: quote.last_quote_at
+                ? new Date(quote.last_quote_at * 1000).toISOString()
+                : quote.datetime,
+              fetchedAt,
+              availability: "delayed",
+              delayLabel: "Delayed quote · up to 15-minute app cache",
+              timezone: target.timezone
+            },
+            history: await fetchTwelveHistory(target.providerSymbol, twelveKey)
+          });
+        })
+      );
     }
-  }
+  })();
 
   const fredKey = process.env.FRED_API_KEY;
-  if (!fredKey) {
-    notes.push("FRED_API_KEY is missing; FRED-backed instruments stayed on fixtures.");
-  } else {
-    for (const [id, target] of Object.entries(fredTargets)) {
-      const fixture = byId.get(id);
-      if (!fixture) {
-        continue;
-      }
+  const fredTask = (async () => {
+    if (!fredKey) {
+      notes.push("FRED_API_KEY is missing; FRED observations are unavailable.");
+    } else {
+      await Promise.all(
+        Object.entries(fredTargets).map(async ([id, target]) => {
+          const fixture = byId.get(id);
+          if (!fixture) {
+            return;
+          }
 
-      const replacement = await fredSeriesToInstrument(fixture, target, fredKey, fetchedAt);
-      if (replacement) {
-        replaceInstrument(instruments, id, replacement);
-      } else {
-        notes.push(`${fixture.name} stayed fixture-backed: FRED returned no usable ${target.seriesId} observations.`);
-      }
+          const replacement = await fredSeriesToInstrument(
+            fixture,
+            target,
+            fredKey,
+            fetchedAt
+          );
+          if (replacement) {
+            replaceInstrument(instruments, id, replacement);
+          } else {
+            notes.push(
+              `${fixture.name}: FRED returned no usable observations.`
+            );
+          }
+        })
+      );
     }
-  }
+  })();
+  await Promise.all([nseTask, twelveTask, fredTask]);
 
-  const liveCount = instruments.filter((instrument) => instrument.meta.availability !== "fixture").length;
-  const fixtureIds = instruments.filter((instrument) => instrument.meta.availability === "fixture").map((instrument) => instrument.id);
-
-  if (fixtureIds.includes("nifty50")) {
-    notes.push("Nifty 50 remains fixture-backed: NSE official MCP did not return a usable quote during this fetch.");
-  }
-
-  if (fixtureIds.includes("sensex")) {
-    notes.push("Sensex remains fixture-backed: NSE official MCP does not cover BSE Sensex, and no free trusted BSE quote API has been confirmed.");
-  }
+  const liveCount = instruments.filter(
+    (instrument) => instrument.meta.availability !== "unavailable"
+  ).length;
+  notes.push(
+    "Sensex is unavailable: a trusted free BSE quote source has not been verified."
+  );
 
   return {
     instruments,
     fetchedAt,
-    status: liveCount === 0 ? "fixture" : liveCount === instruments.length ? "live" : "mixed",
+    status:
+      liveCount === 0
+        ? "unavailable"
+        : liveCount === instruments.length
+          ? "live"
+          : "mixed",
     notes
   };
 }
@@ -314,50 +386,71 @@ export async function getCalendarData(): Promise<CalendarPayload> {
   const notes: string[] = [];
   const releases: CalendarEvent[] = [];
 
-  const rbiItems = await fetchFeedItems(rbiFeeds, notes);
-  const fedItems = await fetchFeedItems(fedFeeds, notes);
+  const [rbiItems, fedItems] = await Promise.all([
+    fetchFeedItems(rbiFeeds, notes),
+    fetchFeedItems(fedFeeds, notes)
+  ]);
 
   releases.push(
-    ...rbiItems.slice(0, 3).map((item, index) => rssItemToEvent(item, {
-      idPrefix: "rbi-release",
-      index,
-      region: "India",
-      sourceName: "RBI RSS",
-      context: "Official RBI release. Use as source context; this does not by itself predict a market move."
-    })),
-    ...fedItems.slice(0, 3).map((item, index) => rssItemToEvent(item, {
-      idPrefix: "fed-release",
-      index,
-      region: "US",
-      sourceName: "Federal Reserve RSS",
-      context: "Official Federal Reserve release. Use as policy or banking context; this is not a trading signal."
-    }))
+    ...rbiItems.slice(0, 3).map((item, index) =>
+      rssItemToEvent(item, {
+        idPrefix: "rbi-release",
+        index,
+        region: "India",
+        sourceName: "RBI RSS",
+        context:
+          "Official RBI release. Use as source context; this does not by itself predict a market move."
+      })
+    ),
+    ...fedItems.slice(0, 3).map((item, index) =>
+      rssItemToEvent(item, {
+        idPrefix: "fed-release",
+        index,
+        region: "US",
+        sourceName: "Federal Reserve RSS",
+        context:
+          "Official Federal Reserve release. Use as policy or banking context; this is not a trading signal."
+      })
+    )
   );
 
-  const events = releases.length ? releases : calendarEvents;
+  const events = releases.sort(
+    (a, b) => Date.parse(b.startsAt) - Date.parse(a.startsAt)
+  );
 
   return {
     events,
     fetchedAt,
-    status: releases.length ? "live" : "fixture",
+    status:
+      rbiItems.length && fedItems.length
+        ? "live"
+        : releases.length
+          ? "mixed"
+          : "unavailable",
     notes
   };
 }
 
-async function fetchTwelveQuote(symbol: string, apiKey: string): Promise<TwelveQuote | null> {
+async function fetchTwelveQuote(
+  symbol: string,
+  apiKey: string
+): Promise<TwelveQuote | null> {
   const url = new URL("https://api.twelvedata.com/quote");
   url.searchParams.set("symbol", symbol);
   url.searchParams.set("apikey", apiKey);
+  url.searchParams.set("timezone", "UTC");
 
-  const response = await fetch(url, { next: { revalidate: 900 } });
-  if (!response.ok) {
+  const response = await safeFetch(url, 900);
+  if (!response?.ok) {
     return null;
   }
 
-  return response.json() as Promise<TwelveQuote>;
+  return response.json().catch(() => null) as Promise<TwelveQuote | null>;
 }
 
-async function createNseMcpSession(notes: string[]): Promise<NseMcpSession | null> {
+async function createNseMcpSession(
+  notes: string[]
+): Promise<NseMcpSession | null> {
   const response = await postNseMcp({
     jsonrpc: "2.0",
     id: 1,
@@ -373,7 +466,9 @@ async function createNseMcpSession(notes: string[]): Promise<NseMcpSession | nul
   });
 
   if (!response?.ok) {
-    notes.push(`NSE MCP initialize failed: ${response?.error ?? `HTTP ${response?.response?.status ?? "unknown"}`}.`);
+    notes.push(
+      `NSE MCP initialize failed: ${response?.error ?? `HTTP ${response?.response?.status ?? "unknown"}`}.`
+    );
     return null;
   }
 
@@ -387,7 +482,11 @@ async function createNseMcpSession(notes: string[]): Promise<NseMcpSession | nul
   return { sessionId, cookie };
 }
 
-async function fetchNseIndexQuote(indexName: string, session: NseMcpSession, notes: string[]): Promise<NseIndexQuote | null> {
+async function fetchNseIndexQuote(
+  indexName: string,
+  session: NseMcpSession,
+  notes: string[]
+): Promise<NseIndexQuote | null> {
   const response = await postNseMcp(
     {
       jsonrpc: "2.0",
@@ -403,7 +502,9 @@ async function fetchNseIndexQuote(indexName: string, session: NseMcpSession, not
 
   const payload = response?.payload;
   if (!payload || payload.error || payload.result?.isError) {
-    notes.push(`NSE MCP quote failed for ${indexName}: ${payload?.error?.message ?? response?.error ?? `HTTP ${response?.response?.status ?? "unknown"}`}.`);
+    notes.push(
+      `NSE MCP quote failed for ${indexName}: ${payload?.error?.message ?? response?.error ?? `HTTP ${response?.response?.status ?? "unknown"}`}.`
+    );
     return null;
   }
 
@@ -415,7 +516,12 @@ async function postNseMcp(
   body: Record<string, unknown>,
   session?: Partial<NseMcpSession>,
   timeoutMs = 6500
-): Promise<{ ok: boolean; response?: Response; payload: McpResponse | null; error?: string } | null> {
+): Promise<{
+  ok: boolean;
+  response?: Response;
+  payload: McpResponse | null;
+  error?: string;
+} | null> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -434,15 +540,20 @@ async function postNseMcp(
       headers.cookie = session.cookie;
     }
 
-    const response = await fetch(nseMcpEndpoint, {
+    const requestOptions = {
       method: "POST",
       headers,
       body: JSON.stringify(body),
       signal: controller.signal,
-      cache: "no-store"
+      cache: "no-store" as const,
+      dispatcher: nseDispatcher
+    };
+    const upstream = await fetchNseTransport(nseMcpEndpoint, requestOptions);
+    const text = await upstream.text();
+    const response = new Response(text, {
+      status: upstream.status,
+      headers: Object.fromEntries(upstream.headers.entries())
     });
-
-    const text = await response.text();
     return {
       ok: response.ok,
       response,
@@ -459,7 +570,7 @@ async function postNseMcp(
   }
 }
 
-function parseMcpResponse(text: string): McpResponse | null {
+export function parseMcpResponse(text: string): McpResponse | null {
   const trimmed = text.trim();
   if (!trimmed) {
     return null;
@@ -485,8 +596,11 @@ function parseMcpResponse(text: string): McpResponse | null {
   }
 }
 
-function extractNseIndexQuote(payload: McpResponse): NseIndexQuote | null {
-  const textBlocks = payload.result?.content?.map((item) => item.text).filter(Boolean) ?? [];
+export function extractNseIndexQuote(
+  payload: McpResponse
+): NseIndexQuote | null {
+  const textBlocks =
+    payload.result?.content?.map((item) => item.text).filter(Boolean) ?? [];
   const candidates: unknown[] = [payload.result, ...textBlocks];
 
   for (const candidate of candidates) {
@@ -506,22 +620,60 @@ function parseNseQuoteCandidate(candidate: unknown): NseIndexQuote | null {
       return parseNseQuoteCandidate(parsed);
     }
 
-    return parseNseQuoteText(candidate);
+    return null;
   }
 
   const objects = flattenObjects(candidate);
+  const observedAt = objects
+    .map((object) =>
+      pickDate(normalizeKeys(object), [
+        "nsetimestamp",
+        "lastupdatetime",
+        "timeval",
+        "timestamp"
+      ])
+    )
+    .find(Boolean);
   for (const object of objects) {
     const normalized = normalizeKeys(object);
-    const value = pickNumber(normalized, ["lastprice", "last", "ltp", "indexvalue", "lasttradedprice", "close", "value"]);
+    const value = pickNumber(normalized, [
+      "lastprice",
+      "last",
+      "ltp",
+      "indexvalue",
+      "lasttradedprice",
+      "close"
+    ]);
     if (!Number.isFinite(value) || value <= 0) {
       continue;
     }
 
     return {
       value,
-      change: pickOptionalNumber(normalized, ["change", "netchange", "chng", "pointchange"]),
-      changePercent: pickOptionalNumber(normalized, ["pchange", "percchange", "percentchange", "perchange", "changepercent"]),
-      observedAt: pickDate(normalized, ["nsetimestamp", "timestamp", "lastupdated", "lastupdatedtime", "datetime", "time", "timeval"])
+      change: pickOptionalNumber(normalized, [
+        "change",
+        "netchange",
+        "chng",
+        "pointchange"
+      ]),
+      changePercent: pickOptionalNumber(normalized, [
+        "pchange",
+        "percchange",
+        "percentchange",
+        "perchange",
+        "changepercent"
+      ]),
+      observedAt:
+        pickDate(normalized, [
+          "nsetimestamp",
+          "latesttimestamp",
+          "timestamp",
+          "lastupdated",
+          "lastupdatedtime",
+          "datetime",
+          "time",
+          "timeval"
+        ]) ?? observedAt
     };
   }
 
@@ -542,19 +694,6 @@ function parseJsonish(value: string): unknown | null {
   }
 }
 
-function parseNseQuoteText(text: string): NseIndexQuote | null {
-  const value = matchNumber(text, /(?:last price|last|ltp|index value|value)\D+([\d,]+(?:\.\d+)?)/i);
-  if (!Number.isFinite(value) || value <= 0) {
-    return null;
-  }
-
-  return {
-    value,
-    change: matchOptionalNumber(text, /(?:change|net change)\D+(-?[\d,]+(?:\.\d+)?)/i),
-    changePercent: matchOptionalNumber(text, /(?:pchange|percent change|% change)\D+(-?[\d,]+(?:\.\d+)?)/i)
-  };
-}
-
 function flattenObjects(value: unknown): Array<Record<string, unknown>> {
   if (!value || typeof value !== "object") {
     return [];
@@ -565,12 +704,18 @@ function flattenObjects(value: unknown): Array<Record<string, unknown>> {
   }
 
   const object = value as Record<string, unknown>;
-  return [object, ...Object.values(object).flatMap((item) => flattenObjects(item))];
+  return [
+    object,
+    ...Object.values(object).flatMap((item) => flattenObjects(item))
+  ];
 }
 
 function normalizeKeys(object: Record<string, unknown>) {
   return Object.fromEntries(
-    Object.entries(object).map(([key, value]) => [key.toLowerCase().replace(/[^a-z0-9]/g, ""), value])
+    Object.entries(object).map(([key, value]) => [
+      key.toLowerCase().replace(/[^a-z0-9]/g, ""),
+      value
+    ])
   );
 }
 
@@ -585,7 +730,10 @@ function pickOptionalNumber(object: Record<string, unknown>, keys: string[]) {
       continue;
     }
 
-    const numeric = typeof value === "number" ? value : Number(String(value ?? "").replace(/,/g, ""));
+    const numeric =
+      typeof value === "number"
+        ? value
+        : Number(String(value ?? "").replace(/,/g, ""));
     if (Number.isFinite(numeric)) {
       return numeric;
     }
@@ -601,27 +749,44 @@ function pickDate(object: Record<string, unknown>, keys: string[]) {
       continue;
     }
 
-    const date = new Date(String(value));
+    const raw = String(value);
+    // NSE publishes local IST strings without an offset. Never interpret them as server-local time.
+    const match = raw.match(
+      /^(\d{2})-([A-Za-z]{3})-(\d{4})\s+(\d{2}:\d{2}(?::\d{2})?)$/
+    );
+    const months = [
+      "Jan",
+      "Feb",
+      "Mar",
+      "Apr",
+      "May",
+      "Jun",
+      "Jul",
+      "Aug",
+      "Sep",
+      "Oct",
+      "Nov",
+      "Dec"
+    ];
+    const month = match
+      ? months.findIndex(
+          (item) => item.toLowerCase() === match[2].toLowerCase()
+        ) + 1
+      : 0;
+    const localIso = raw.match(/^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})$/);
+    const date = new Date(
+      match && month
+        ? `${match[3]}-${String(month).padStart(2, "0")}-${match[1]}T${match[4]}+05:30`
+        : localIso
+          ? `${localIso[1]}T${localIso[2]}+05:30`
+          : raw
+    );
     if (Number.isFinite(date.getTime())) {
       return date.toISOString();
     }
   }
 
   return undefined;
-}
-
-function matchNumber(text: string, pattern: RegExp) {
-  return matchOptionalNumber(text, pattern) ?? Number.NaN;
-}
-
-function matchOptionalNumber(text: string, pattern: RegExp) {
-  const match = text.match(pattern);
-  if (!match?.[1]) {
-    return undefined;
-  }
-
-  const numeric = Number(match[1].replace(/,/g, ""));
-  return Number.isFinite(numeric) ? numeric : undefined;
 }
 
 function isNseMarketOpen(now = new Date()) {
@@ -649,20 +814,25 @@ function isNseMarketOpen(now = new Date()) {
   return current >= 9 * 60 + 15 && current <= 15 * 60 + 30;
 }
 
-async function fetchFredObservations(seriesId: string, apiKey: string): Promise<FredObservation[]> {
+async function fetchFredObservations(
+  seriesId: string,
+  apiKey: string
+): Promise<FredObservation[]> {
   const url = new URL("https://api.stlouisfed.org/fred/series/observations");
   url.searchParams.set("series_id", seriesId);
   url.searchParams.set("file_type", "json");
-  url.searchParams.set("limit", "6");
+  url.searchParams.set("limit", "40");
   url.searchParams.set("sort_order", "desc");
   url.searchParams.set("api_key", apiKey);
 
-  const response = await fetch(url, { next: { revalidate: 3600 } });
-  if (!response.ok) {
+  const response = await safeFetch(url, 3600);
+  if (!response?.ok) {
     return [];
   }
 
-  const data = (await response.json()) as { observations?: FredObservation[] };
+  const data = (await response.json().catch(() => ({}))) as {
+    observations?: FredObservation[];
+  };
   return data.observations ?? [];
 }
 
@@ -681,7 +851,10 @@ async function fredSeriesToInstrument(
   const observations = await fetchFredObservations(target.seriesId, apiKey);
   const numeric = observations
     .filter((observation) => observation.value !== ".")
-    .map((observation) => ({ date: observation.date, value: Number(observation.value) }))
+    .map((observation) => ({
+      date: observation.date,
+      value: Number(observation.value)
+    }))
     .filter((observation) => Number.isFinite(observation.value));
 
   const latest = numeric[0];
@@ -692,7 +865,8 @@ async function fredSeriesToInstrument(
   }
 
   const change = latest.value - previous.value;
-  const changePercent = previous.value === 0 ? undefined : (change / previous.value) * 100;
+  const changePercent =
+    previous.value === 0 ? undefined : (change / previous.value) * 100;
 
   return {
     ...fixture,
@@ -705,17 +879,21 @@ async function fredSeriesToInstrument(
     meta: {
       sourceName: "FRED",
       sourceUrl: target.sourceUrl,
-      observedAt: `${latest.date}T16:00:00${target.timezone === "UTC" ? "Z" : "-04:00"}`,
+      observedAt: latest.date,
       fetchedAt,
       availability: "end_of_day",
       delayLabel: "End-of-day series",
       timezone: target.timezone
     },
     history: numeric
-      .slice(0, 6)
+      .slice(0, 30)
       .reverse()
       .map((point) => ({
-        date: new Intl.DateTimeFormat("en-IN", { month: "short", day: "numeric", timeZone: "UTC" }).format(new Date(`${point.date}T00:00:00Z`)),
+        date: new Intl.DateTimeFormat("en-IN", {
+          month: "short",
+          day: "numeric",
+          timeZone: "UTC"
+        }).format(new Date(`${point.date}T00:00:00Z`)),
         value: point.value
       }))
   };
@@ -726,22 +904,38 @@ async function fetchFeedItems(feedUrls: string[], notes: string[]) {
 
   for (const feedUrl of feedUrls) {
     try {
-      const response = await fetch(feedUrl, { next: { revalidate: 1800 } });
-      if (!response.ok) {
-        notes.push(`${feedUrl} failed with ${response.status}.`);
+      const response = await safeFetch(new URL(feedUrl), 1800);
+      if (!response?.ok) {
+        notes.push(`${feedUrl} is unavailable.`);
         continue;
       }
 
       const parsed = xmlParser.parse(await response.text()) as RssFeed;
       allItems.push(...asArray(parsed.rss?.channel?.item));
     } catch (error) {
-      notes.push(`${feedUrl} failed: ${error instanceof Error ? error.message : "unknown error"}.`);
+      notes.push(
+        `${feedUrl} failed: ${error instanceof Error ? error.message : "unknown error"}.`
+      );
     }
   }
 
   return allItems
-    .filter((item) => item.title && item.link && item.pubDate)
-    .sort((a, b) => new Date(b.pubDate ?? 0).getTime() - new Date(a.pubDate ?? 0).getTime());
+    .filter(
+      (item) =>
+        item.title &&
+        item.link &&
+        item.pubDate &&
+        Number.isFinite(Date.parse(item.pubDate)) &&
+        isOfficialLink(item.link)
+    )
+    .filter(
+      (item, index, items) =>
+        items.findIndex((other) => other.link === item.link) === index
+    )
+    .sort(
+      (a, b) =>
+        new Date(b.pubDate ?? 0).getTime() - new Date(a.pubDate ?? 0).getTime()
+    );
 }
 
 function rssItemToEvent(
@@ -755,7 +949,7 @@ function rssItemToEvent(
   }
 ): CalendarEvent {
   return {
-    id: `${options.idPrefix}-${options.index}`,
+    id: `${options.idPrefix}-${stableId(item.link ?? "")}`,
     title: item.title ?? "Official release",
     region: options.region,
     importance: options.index === 0 ? "high" : "medium",
@@ -770,16 +964,11 @@ function rssItemToEvent(
   };
 }
 
-function appendHistory(fixture: MarketInstrument, date: string | undefined, value: number) {
-  const parsedDate = date ? new Date(date.includes("T") ? date : `${date}T00:00:00Z`) : null;
-  const label = parsedDate && Number.isFinite(parsedDate.getTime())
-    ? new Intl.DateTimeFormat("en-IN", { month: "short", day: "numeric", timeZone: "UTC" }).format(parsedDate)
-    : "Latest";
-
-  return [...fixture.history.slice(-5), { date: label, value }];
-}
-
-function replaceInstrument(instruments: MarketInstrument[], id: string, replacement: MarketInstrument) {
+function replaceInstrument(
+  instruments: MarketInstrument[],
+  id: string,
+  replacement: MarketInstrument
+) {
   const index = instruments.findIndex((instrument) => instrument.id === id);
   if (index >= 0) {
     instruments[index] = replacement;
@@ -791,4 +980,268 @@ function asArray<T>(value: T | T[] | undefined): T[] {
     return [];
   }
   return Array.isArray(value) ? value : [value];
+}
+
+// Provider errors are isolated so one outage cannot discard other successful data.
+async function safeFetch(
+  url: URL,
+  revalidate: number
+): Promise<Response | null> {
+  try {
+    return await fetch(url, {
+      next: { revalidate },
+      signal: AbortSignal.timeout(6500)
+    });
+  } catch {
+    return null;
+  }
+}
+
+export function unavailableInstrument(
+  instrument: MarketInstrument,
+  fetchedAt = new Date().toISOString()
+): MarketInstrument {
+  return {
+    ...instrument,
+    value: null,
+    change: null,
+    changePercent: undefined,
+    status: "closed",
+    history: [],
+    meta: {
+      ...instrument.meta,
+      sourceName:
+        instrument.id === "sensex"
+          ? "BSE source pending"
+          : "Source unavailable",
+      observedAt: undefined,
+      fetchedAt,
+      availability: "unavailable",
+      delayLabel: "Quote unavailable"
+    }
+  };
+}
+
+async function fetchTwelveHistory(
+  symbol: string,
+  apiKey: string
+): Promise<MarketInstrument["history"]> {
+  const url = new URL("https://api.twelvedata.com/time_series");
+  url.searchParams.set("symbol", symbol);
+  url.searchParams.set("interval", "1day");
+  url.searchParams.set("outputsize", "30");
+  url.searchParams.set("apikey", apiKey);
+  const response = await safeFetch(url, 3600);
+  if (!response?.ok) return [];
+  const payload = (await response.json().catch(() => ({}))) as {
+    values?: Array<{ datetime: string; close: string }>;
+  };
+  return (payload.values ?? [])
+    .filter(
+      (point) =>
+        Number.isFinite(Number(point.close)) &&
+        Number(point.close) > 0 &&
+        Number.isFinite(Date.parse(point.datetime))
+    )
+    .filter(
+      (point, index, points) =>
+        points.findIndex((other) => other.datetime === point.datetime) === index
+    )
+    .reverse()
+    .map((point) => ({ date: point.datetime, value: Number(point.close) }));
+}
+
+function stableId(value: string) {
+  return createHash("sha256").update(value).digest("hex").slice(0, 20);
+}
+
+function isOfficialLink(value: string) {
+  try {
+    const url = new URL(value);
+    return (
+      url.protocol === "https:" &&
+      ["rbi.org.in", "federalreserve.gov"].some(
+        (host) => url.hostname === host || url.hostname.endsWith(`.${host}`)
+      )
+    );
+  } catch {
+    return false;
+  }
+}
+
+export async function getNewsData() {
+  const notes: string[] = [];
+  const [india, us] = await Promise.all([
+    fetchFeedItems(rbiFeeds, notes),
+    fetchFeedItems(fedFeeds, notes)
+  ]);
+  const stories: Story[] = [
+    ...india.slice(0, 6).map((item) => ({ item, geography: "India" as const })),
+    ...us.slice(0, 6).map((item) => ({ item, geography: "US" as const }))
+  ]
+    .sort((a, b) => Date.parse(b.item.pubDate!) - Date.parse(a.item.pubDate!))
+    .map(({ item, geography }, index) => {
+      const headline = plainText(item.title ?? "Official release");
+      const summary =
+        plainText(item.description ?? "").slice(0, 1000) ||
+        "Read the official release for the full details.";
+      return {
+        id: stableId(item.link!),
+        rank: index + 1,
+        headline,
+        summary,
+        geography,
+        category: "central banks",
+        readMinutes: Math.max(1, Math.ceil(summary.split(/\s+/).length / 200)),
+        source:
+          geography === "India" ? "Reserve Bank of India" : "Federal Reserve",
+        sourceUrl: item.link!,
+        publishedAt: new Date(item.pubDate!).toISOString(),
+        claimBasis: "reported",
+        sourceAccess: "official_release",
+        summaryVersion: "official-rss-v1",
+        whatHappened: [summary],
+        reportedDrivers: [],
+        potentialImplications: [],
+        relatedInstruments:
+          geography === "India"
+            ? ["nifty50", "usdinr"]
+            : ["us10y", "sp500", "nasdaq"]
+      };
+    });
+  return {
+    stories,
+    fetchedAt: new Date().toISOString(),
+    status:
+      india.length && us.length
+        ? ("live" as const)
+        : stories.length
+          ? ("mixed" as const)
+          : ("unavailable" as const),
+    notes
+  };
+}
+
+function plainText(value: string) {
+  return String(value)
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;|&#160;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export async function getWatchlistData(): Promise<MarketDataPayload> {
+  const fetchedAt = new Date().toISOString();
+  const notes: string[] = [];
+  const session = await createNseMcpSession(notes);
+  const instruments = await Promise.all(
+    starterWatchlist.map(async (item): Promise<MarketInstrument> => {
+      const base = unavailableInstrument(
+        {
+          ...marketInstruments[0],
+          id: item.id,
+          name: item.name,
+          symbol: item.symbol,
+          region: item.currency === "INR" ? "India" : "US",
+          kind: "equity",
+          unit: item.currency,
+          currency: item.currency,
+          session: `${item.exchange} quote`,
+          meta: {
+            ...marketInstruments[0].meta,
+            timezone:
+              item.currency === "INR" ? "Asia/Kolkata" : "America/New_York",
+            sourceUrl:
+              item.exchange === "NSE"
+                ? `https://www.nseindia.com/get-quotes/equity?symbol=${item.symbol}`
+                : "https://twelvedata.com/docs"
+          }
+        },
+        fetchedAt
+      );
+      if (item.exchange === "NSE" && session) {
+        const response = await postNseMcp(
+          {
+            jsonrpc: "2.0",
+            id: item.id,
+            method: "tools/call",
+            params: {
+              name: "cm_get_stock_quote",
+              arguments: { symbol: item.symbol }
+            }
+          },
+          session
+        );
+        const quote =
+          response?.payload &&
+          !response.payload.error &&
+          !response.payload.result?.isError
+            ? extractNseIndexQuote(response.payload)
+            : null;
+        if (quote)
+          return {
+            ...base,
+            value: quote.value,
+            change: quote.change ?? null,
+            changePercent: quote.changePercent,
+            status: "last_session",
+            meta: {
+              ...base.meta,
+              sourceName: "NSE official MCP",
+              sourceUrl: `https://www.nseindia.com/get-quotes/equity?symbol=${item.symbol}`,
+              observedAt: quote.observedAt,
+              availability:
+                quote.observedAt &&
+                Date.now() - Date.parse(quote.observedAt) < 5 * 60_000 &&
+                isNseMarketOpen()
+                  ? "delayed"
+                  : "stale",
+              delayLabel: "Delayed NSE quote · up to 15-minute app cache"
+            }
+          };
+      } else if (item.exchange === "NYSE" && process.env.TWELVE_DATA_API_KEY) {
+        const quote = await fetchTwelveQuote(
+          item.symbol,
+          process.env.TWELVE_DATA_API_KEY
+        );
+        if (quote && !quote.code && !quote.message && Number(quote.close) > 0)
+          return {
+            ...base,
+            value: Number(quote.close),
+            change:
+              pickOptionalNumber(quote as Record<string, unknown>, [
+                "change"
+              ]) ?? null,
+            changePercent: pickOptionalNumber(
+              quote as Record<string, unknown>,
+              ["percent_change"]
+            ),
+            status: quote.is_market_open ? "open" : "last_session",
+            meta: {
+              ...base.meta,
+              sourceName: "Twelve Data",
+              sourceUrl: "https://twelvedata.com/docs",
+              availability: "delayed",
+              delayLabel: "Delayed quote · up to 15-minute app cache",
+              observedAt: quote.datetime
+            }
+          };
+      }
+      notes.push(`${item.symbol}: quote unavailable.`);
+      return base;
+    })
+  );
+  const count = instruments.filter(
+    (instrument) => instrument.value !== null
+  ).length;
+  return {
+    instruments,
+    fetchedAt,
+    status:
+      count === instruments.length ? "live" : count ? "mixed" : "unavailable",
+    notes
+  };
 }

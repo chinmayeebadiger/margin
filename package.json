@@ -8,16 +8,21 @@
     "start": "next start",
     "typecheck": "tsc --noEmit",
     "check": "npm run typecheck && npm run build",
-    "phase2:proof": "node scripts/phase2-data-proof.mjs"
+    "phase2:proof": "node scripts/phase2-data-proof.mjs",
+    "test:data": "node scripts/data-tests.mjs",
+    "test:ui": "node scripts/ui-tests.mjs",
+    "test:pwa": "node scripts/pwa-tests.mjs"
   },
   "dependencies": {
     "fast-xml-parser": "^5.11.2",
     "lucide-react": "^0.468.0",
     "next": "^16.4.0",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "undici": "^8.11.2"
   },
   "devDependencies": {
+    "@playwright/test": "^1.64.0",
     "@types/node": "^22.10.1",
     "@types/react": "^19.0.1",
     "@types/react-dom": "^19.0.1",

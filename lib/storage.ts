@@ -1,5 +1,5 @@
 import type { AppState } from "./contracts";
-import { starterWatchlist } from "./fixtures";
+import { starterWatchlist } from "./catalog";
 
 const storageKey = "market-brief-state-v1";
 
@@ -25,7 +25,7 @@ export function loadState(): AppState {
     return {
       savedStories: parsed.savedStories ?? [],
       completedStoryIds: parsed.completedStoryIds ?? [],
-      watchlist: parsed.watchlist?.length ? parsed.watchlist : starterWatchlist
+      watchlist: Array.isArray(parsed.watchlist) ? parsed.watchlist : starterWatchlist
     };
   } catch {
     return defaultState;
@@ -37,7 +37,11 @@ export function saveState(state: AppState) {
     return;
   }
 
-  window.localStorage.setItem(storageKey, JSON.stringify(state));
+  try {
+    window.localStorage.setItem(storageKey, JSON.stringify(state));
+  } catch {
+    // Safari private mode or a full storage quota should not break navigation.
+  }
 }
 
 export function clearState() {
@@ -45,5 +49,9 @@ export function clearState() {
     return;
   }
 
-  window.localStorage.removeItem(storageKey);
+  try {
+    window.localStorage.removeItem(storageKey);
+  } catch {
+    // The in-memory reset can still proceed when Safari storage is unavailable.
+  }
 }

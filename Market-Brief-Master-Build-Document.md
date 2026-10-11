@@ -282,6 +282,8 @@ Exit criteria:
 
 ### Phase 3 - Live/delayed data integration
 
+Current implementation and remaining source limitations are recorded in [Implementation Review](docs/Implementation-Review.md), updated 11 October 2026. Runtime fixture fallbacks have been removed; unavailable sources remain visibly unavailable. Some Phase 4 hardening is included, while physical iPhone Safari QA remains open.
+
 Deliverables:
 
 - Market data adapter wired into Markets and Today.
@@ -347,4 +349,3 @@ These do not block the fixture MVP:
 - Offline mode does not make quotes look live.
 - No API key is present in the client bundle.
 - Provider limits and possible paid-data needs are documented in Settings or an internal README.
-

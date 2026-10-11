@@ -19,10 +19,10 @@ export type MarketInstrument = {
   symbol: string;
   region: "India" | "US" | "Global";
   kind: "index" | "commodity" | "fx" | "yield" | "equity";
-  value: number;
+  value: number | null;
   unit: string;
   currency?: "INR" | "USD";
-  change: number;
+  change: number | null;
   changePercent?: number;
   session: string;
   status: "open" | "closed" | "last_session" | "fixture";
@@ -80,6 +80,7 @@ export type WatchInstrument = {
 export type SavedStory = {
   storyId: string;
   savedAt: string;
+  story?: Story;
 };
 
 export type AppState = {
