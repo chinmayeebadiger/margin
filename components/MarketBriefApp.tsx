@@ -6,24 +6,21 @@ import {
   CalendarDays,
   Check,
   ChevronLeft,
+  ChevronDown,
   ChevronRight,
-  CircleDollarSign,
   Download,
   ExternalLink,
   FileText,
-  GripVertical,
   Home,
   Info,
   LineChart,
-  ListPlus,
   RotateCcw,
-  Search,
   Settings,
+  Sparkles,
   Trash2
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import type { AppState, CalendarEvent, MarketInstrument, Story, WatchInstrument } from "@/lib/contracts";
-import { starterWatchlist } from "@/lib/catalog";
+import type { AppState, CalendarEvent, MarketInstrument, Story } from "@/lib/contracts";
 import { clearState, defaultState, loadState, saveState } from "@/lib/storage";
 
 type TabId = "today" | "markets" | "watchlist" | "saved" | "settings";
@@ -33,7 +30,7 @@ type DataMode = "unavailable" | "mixed" | "live" | "loading" | "error";
 const tabs: Array<{ id: TabId; label: string; icon: typeof Home }> = [
   { id: "today", label: "Brief", icon: Home },
   { id: "markets", label: "Markets", icon: LineChart },
-  { id: "watchlist", label: "Watch", icon: CircleDollarSign },
+  { id: "watchlist", label: "Learn", icon: Sparkles },
   { id: "saved", label: "Saved", icon: Bookmark },
   { id: "settings", label: "Settings", icon: Settings }
 ];
@@ -45,6 +42,7 @@ export function MarketBriefApp() {
   const [instruments, setInstruments] = useState<MarketInstrument[]>([]);
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [stories, setStories] = useState<Story[]>([]);
+  const [storyLimit, setStoryLimit] = useState(6);
   const [watchQuotes, setWatchQuotes] = useState<MarketInstrument[]>([]);
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [dataMode, setDataMode] = useState<DataMode>("loading");
@@ -54,7 +52,6 @@ export function MarketBriefApp() {
   const [selectedStoryId, setSelectedStoryId] = useState<string | null>(null);
   const [calendarOpen, setCalendarOpen] = useState(false);
   const [marketFilter, setMarketFilter] = useState<MarketFilter>("All");
-  const [watchQuery, setWatchQuery] = useState("");
   const [installReady, setInstallReady] = useState(false);
 
   useEffect(() => {
@@ -78,45 +75,51 @@ export function MarketBriefApp() {
 
   useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 25000);
 
     async function loadLiveData() {
       setDataMode("loading");
+      setStoryLimit(6);
       setFeedModes({ today: "loading", markets: "loading", watchlist: "loading", calendar: "loading" });
       const notes: string[] = [];
 
       try {
-        const results = await Promise.allSettled(["market-data", "calendar", "news", "watchlist"].map(async (route) => {
-          const response = await fetch(`/api/${route}`, { cache: "no-store", signal: AbortSignal.timeout(25000) });
-          if (!response.ok) throw new Error(`${route} is unavailable.`);
-          return response.json();
-        }));
-        if (cancelled) return;
         const statuses: Array<"unavailable" | "mixed" | "live"> = [];
-        const modes: Record<string, DataMode> = {};
-        results.forEach((result, index) => {
+        await Promise.all(["market-data", "calendar", "news", "watchlist"].map(async (route, index) => {
           const feed = ["markets", "calendar", "today", "watchlist"][index];
-          if (result.status === "rejected") {
-            modes[feed] = "unavailable";
+          try {
+            const response = await fetch(`/api/${route}`, { cache: "no-store", signal: controller.signal });
+            if (!response.ok) throw new Error(`${route} is unavailable.`);
+            const payload = await response.json();
+            if (cancelled) return;
+            statuses.push(payload.status);
+            notes.push(...payload.notes);
+            if (index === 0) setInstruments(payload.instruments);
+            if (index === 1) setEvents(payload.events);
+            if (index === 2) {
+              setStories(payload.stories);
+              setLastFetchedAt(payload.fetchedAt);
+            }
+            if (index === 3) setWatchQuotes(payload.instruments);
+            setFeedModes((current) => ({ ...current, [feed]: payload.status }));
+          } catch {
+            if (cancelled) return;
+            setFeedModes((current) => ({ ...current, [feed]: "unavailable" }));
             notes.push(["Markets", "Calendar", "News", "Watchlist"][index] + " could not be refreshed.");
             statuses.push("unavailable");
             if (index === 0) setInstruments([]);
             if (index === 1) setEvents([]);
-            if (index === 2) setStories([]);
+            if (index === 2) {
+              setStories([]);
+              setLastFetchedAt(null);
+            }
             if (index === 3) setWatchQuotes([]);
-            return;
           }
-          const payload = result.value;
-          modes[feed] = payload.status;
-          statuses.push(payload.status);
-          notes.push(...payload.notes);
-          if (index === 0) setInstruments(payload.instruments);
-          if (index === 1) setEvents(payload.events);
-          if (index === 2) setStories(payload.stories);
-          if (index === 3) setWatchQuotes(payload.instruments);
-        });
-        setDataNotes(notes);
-        setFeedModes(modes);
-        setLastFetchedAt(new Date().toISOString());
+          setDataNotes([...notes]);
+        }));
+        clearTimeout(timeout);
+        if (cancelled) return;
         setDataMode(resolveDataMode(statuses));
       } catch (error) {
         if (cancelled) {
@@ -124,6 +127,7 @@ export function MarketBriefApp() {
         }
 
         setDataMode("error");
+        clearTimeout(timeout);
         setDataNotes([error instanceof Error ? error.message : "Data fetch failed."]);
         setLastFetchedAt(null);
       }
@@ -133,6 +137,8 @@ export function MarketBriefApp() {
 
     return () => {
       cancelled = true;
+      clearTimeout(timeout);
+      controller.abort();
     };
   }, [refreshVersion]);
 
@@ -142,8 +148,9 @@ export function MarketBriefApp() {
   );
   const instrumentLookup = useMemo(() => new Map(instruments.map((instrument) => [instrument.id, instrument])), [instruments]);
 
-  const completedCount = stories.filter((story) => state.completedStoryIds.includes(story.id)).length;
-  const progressPercent = stories.length ? Math.round((completedCount / stories.length) * 100) : 0;
+  const briefStories = stories.slice(0, storyLimit);
+  const completedCount = briefStories.filter((story) => state.completedStoryIds.includes(story.id)).length;
+  const progressPercent = briefStories.length ? Math.round((completedCount / briefStories.length) * 100) : 0;
 
   function updateState(updater: (current: AppState) => AppState) {
     setState((current) => updater(current));
@@ -197,7 +204,9 @@ export function MarketBriefApp() {
             <>
               {tab === "today" && (
                 <TodayScreen
-                  stories={stories}
+                  stories={briefStories}
+                  hasMore={stories.length > storyLimit}
+                  onLoadMore={() => setStoryLimit((limit) => limit + 6)}
                   fetchedAt={lastFetchedAt}
                   dataMode={feedModes.today}
                   completedCount={completedCount}
@@ -214,34 +223,12 @@ export function MarketBriefApp() {
                 <MarketsScreen instruments={instruments} filter={marketFilter} dataMode={feedModes.markets} onFilter={setMarketFilter} />
               )}
               {tab === "watchlist" && (
-                <WatchlistScreen
+                <CorrelationLearningScreen
+                  stories={stories}
+                  instruments={instruments}
                   quotes={watchQuotes}
-                  watchlist={state.watchlist}
-                  query={watchQuery}
-                  onQuery={setWatchQuery}
-                  onAdd={(item) =>
-                    updateState((current) => ({
-                      ...current,
-                      watchlist: current.watchlist.some((watch) => watch.id === item.id)
-                        ? current.watchlist
-                        : [...current.watchlist, item]
-                    }))
-                  }
-                  onRemove={(id) =>
-                    updateState((current) => ({
-                      ...current,
-                      watchlist: current.watchlist.filter((watch) => watch.id !== id)
-                    }))
-                  }
-                  onNote={(id, note) =>
-                    updateState((current) => ({
-                      ...current,
-                      watchlist: current.watchlist.map((watch) => (watch.id === id ? { ...watch, note } : watch))
-                    }))
-                  }
-                  onMove={(id, direction) =>
-                    updateState((current) => ({ ...current, watchlist: moveWatchItem(current.watchlist, id, direction) }))
-                  }
+                  dataMode={feedModes.watchlist}
+                  onOpenStory={setSelectedStoryId}
                 />
               )}
               {tab === "saved" && (
@@ -293,6 +280,8 @@ function Header({ tab, progressPercent, dataMode, onRefresh }: { tab: TabId; pro
 
 function TodayScreen({
   stories,
+  hasMore,
+  onLoadMore,
   fetchedAt,
   dataMode,
   completedCount,
@@ -305,6 +294,8 @@ function TodayScreen({
   onCalendar
 }: {
   stories: Story[];
+  hasMore: boolean;
+  onLoadMore: () => void;
   fetchedAt: string | null;
   dataMode: DataMode;
   completedCount: number;
@@ -345,7 +336,7 @@ function TodayScreen({
       />
 
       <div className="space-y-2">
-        {!stories.length && <EmptyState icon={FileText} title={dataMode === "loading" ? "Loading articles" : "No articles available"} text="Official releases will appear when the sources respond." />}
+        {!stories.length && <EmptyState icon={FileText} title={dataMode === "loading" ? "Loading articles" : "No articles available"} text="News articles will appear when the sources respond." />}
         {stories.map((story) => (
           <StoryRow
             key={story.id}
@@ -358,6 +349,10 @@ function TodayScreen({
           />
         ))}
       </div>
+      {hasMore && <button type="button" onClick={onLoadMore} className="flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-line text-sm text-ink">
+        <ChevronDown size={18} />
+        Load more
+      </button>}
 
     </div>
   );
@@ -400,9 +395,10 @@ function StoryRow({
   onSave: () => void;
   onComplete: () => void;
 }) {
+  const Headline = story.openInPublisher ? "a" : "button";
   return (
     <article className="rounded-lg border border-line bg-panel">
-      <button className="w-full px-4 py-4 text-left" onClick={onOpen}>
+      <Headline className="block w-full px-4 py-4 text-left" href={story.openInPublisher ? story.sourceUrl : undefined} target={story.openInPublisher ? "_blank" : undefined} rel={story.openInPublisher ? "noopener noreferrer" : undefined} onClick={story.openInPublisher ? undefined : onOpen}>
         <div className="flex items-start gap-3">
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-line bg-panel2 tabular text-sm text-muted">
             {story.rank}
@@ -415,11 +411,11 @@ function StoryRow({
               {isComplete && <Check size={14} className="text-up" aria-label="Complete" />}
             </div>
             <h3 className="mt-1 text-[15px] font-semibold leading-5">{story.headline}</h3>
-            <p className="mt-2 line-clamp-2 text-sm leading-5 text-muted">{story.summary}</p>
+            {story.summary && <p className="mt-2 line-clamp-2 text-sm leading-5 text-muted">{story.summary}</p>}
           </div>
           <ChevronRight size={18} className="mt-1 shrink-0 text-muted" />
         </div>
-      </button>
+      </Headline>
       <div className="flex items-center justify-between border-t border-line px-4 py-2">
         <p className="text-xs text-muted">{story.source} · {story.readMinutes} min</p>
         <div className="flex items-center gap-1">
@@ -479,11 +475,11 @@ function StoryDetail({
         </div>
       </section>
 
-      <DetailBlock title="What happened" items={story.whatHappened} />
+      <DetailBlock title={story.sourceAccess === "metadata_only" ? "Publisher excerpt" : "What happened"} items={story.whatHappened} />
       {story.reportedDrivers.length > 0 && <DetailBlock title="Reported drivers" items={story.reportedDrivers} />}
       {story.potentialImplications.length > 0 && <DetailBlock title="Potential implications" items={story.potentialImplications} />}
 
-      <section className="rounded-lg border border-line bg-panel p-4">
+      {story.relatedInstruments.length > 0 && <section className="rounded-lg border border-line bg-panel p-4">
         <p className="text-sm font-semibold">Related markets</p>
         <div className="mt-3 divide-y divide-line">
           {story.relatedInstruments.map((id) => {
@@ -491,7 +487,7 @@ function StoryDetail({
             return instrument ? <InstrumentRow key={id} instrument={instrument} embedded /> : null;
           })}
         </div>
-      </section>
+      </section>}
 
       <section className="rounded-lg border border-line bg-panel p-4">
         <p className="text-sm font-semibold">Source and trust</p>
@@ -604,108 +600,136 @@ function CalendarScreen({ events, dataMode, onBack }: { events: CalendarEvent[];
   );
 }
 
-function WatchlistScreen({
+function CorrelationLearningScreen({
+  stories,
+  instruments,
   quotes,
-  watchlist,
-  query,
-  onQuery,
-  onAdd,
-  onRemove,
-  onNote,
-  onMove
+  dataMode,
+  onOpenStory
 }: {
+  stories: Story[];
+  instruments: MarketInstrument[];
   quotes: MarketInstrument[];
-  watchlist: WatchInstrument[];
-  query: string;
-  onQuery: (query: string) => void;
-  onAdd: (item: WatchInstrument) => void;
-  onRemove: (id: string) => void;
-  onNote: (id: string, note: string) => void;
-  onMove: (id: string, direction: -1 | 1) => void;
+  dataMode: DataMode;
+  onOpenStory: (id: string) => void;
 }) {
-  const candidates = starterWatchlist.filter((item) => {
-    const haystack = `${item.name} ${item.symbol} ${item.exchange}`.toLowerCase();
-    return haystack.includes(query.toLowerCase());
+  const instrumentLookup = new Map<string, MarketInstrument>();
+  [...instruments, ...quotes].forEach((instrument) => {
+    if (!instrumentLookup.has(instrument.id)) {
+      instrumentLookup.set(instrument.id, instrument);
+    }
   });
+  const correlations = stories
+    .map((story) => ({
+      story,
+      instruments: relatedInstrumentIds(story).map((id) => instrumentLookup.get(id)).filter((instrument): instrument is MarketInstrument => Boolean(instrument))
+    }))
+    .filter((item) => item.instruments.length > 0)
+    .slice(0, 6);
 
   return (
     <div className="space-y-5">
       <section className="rounded-lg border border-line bg-panel p-4">
-        <label className="text-sm font-semibold" htmlFor="instrument-search">
-          Add instrument
-        </label>
-        <div className="mt-3 flex min-h-11 items-center gap-2 rounded-md border border-line bg-panel2 px-3">
-          <Search size={18} className="text-muted" />
-          <input
-            id="instrument-search"
-            value={query}
-            onChange={(event) => onQuery(event.target.value)}
-            placeholder="Search name or ticker"
-            className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted"
-          />
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-sm text-muted">News and price action</p>
+            <h2 className="mt-1 text-xl font-semibold leading-tight">Correlation lab</h2>
+            <p className="mt-2 text-sm leading-6 text-muted">
+              Match reported events with trend, reversal, range, and momentum clues.
+            </p>
+          </div>
+          <StatusPill label={dataModeLabel(dataMode)} tone={dataMode === "live" ? "default" : "warn"} />
         </div>
-        <div className="mt-3 space-y-2">
-          {candidates.map((item) => (
-            <button
-              key={item.id}
-              className="flex min-h-11 w-full items-center justify-between rounded-md border border-line px-3 text-left"
-              onClick={() => onAdd(item)}
-            >
-              <span>
-                <span className="block text-sm font-semibold">{item.symbol}</span>
-                <span className="block text-xs text-muted">{item.name} · {item.exchange} · {item.currency}</span>
-              </span>
-              <ListPlus size={18} className="text-muted" />
-            </button>
+        <div className="mt-4 grid grid-cols-3 gap-2">
+          {["Event", "Reaction", "Pattern"].map((label) => (
+            <div key={label} className="rounded-md border border-line bg-panel2 px-2 py-3 text-center">
+              <p className="text-xs font-semibold">{label}</p>
+            </div>
           ))}
         </div>
       </section>
 
-      <SectionHeader title="One list" />
+      <SectionHeader title="Live correlations" />
       <div className="space-y-3">
-        {watchlist.map((item, index) => (
-          <section key={item.id} className="rounded-lg border border-line bg-panel p-4">
-            <div className="flex items-start gap-3">
-              <GripVertical size={18} className="mt-1 shrink-0 text-muted" />
-              <div className="min-w-0 flex-1">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="text-base font-semibold">{item.symbol}</p>
-                    <p className="text-sm text-muted">{item.name}</p>
-                    <p className="mt-1 text-xs text-muted">{item.exchange} · {item.currency} · {item.sector}</p>
-                  </div>
-                  <IconButton label="Remove instrument" onClick={() => onRemove(item.id)}>
-                    <Trash2 size={18} />
-                  </IconButton>
-                </div>
-                {quotes.find((quote) => quote.id === item.id) ? <InstrumentRow instrument={quotes.find((quote) => quote.id === item.id)!} embedded /> : <p className="mt-3 text-xs text-muted">Quote unavailable</p>}
-                <textarea
-                  value={item.note}
-                  onChange={(event) => onNote(item.id, event.target.value)}
-                  className="mt-3 min-h-[72px] w-full resize-none rounded-md border border-line bg-panel2 p-3 text-sm leading-5 outline-none placeholder:text-muted"
-                  placeholder="Personal note"
-                />
-                <div className="mt-2 flex gap-2">
-                  <button
-                    className="min-h-11 rounded-md border border-line px-3 text-sm text-muted disabled:opacity-40"
-                    disabled={index === 0}
-                    onClick={() => onMove(item.id, -1)}
-                  >
-                    Up
-                  </button>
-                  <button
-                    className="min-h-11 rounded-md border border-line px-3 text-sm text-muted disabled:opacity-40"
-                    disabled={index === watchlist.length - 1}
-                    onClick={() => onMove(item.id, 1)}
-                  >
-                    Down
-                  </button>
-                </div>
-              </div>
+        {!correlations.length && <EmptyState icon={LineChart} title={dataMode === "loading" ? "Loading correlations" : "No correlations available"} text="Correlations appear when news and market feeds share related instruments." />}
+        {correlations.map(({ story, instruments: related }) => (
+          <section key={story.id} className="rounded-lg border border-line bg-panel p-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <StatusPill label={story.geography} />
+              <StatusPill label={story.category} />
+              <StatusPill label={story.source} tone={story.sourceAccess === "official_release" ? "default" : "warn"} />
+            </div>
+            <button className="mt-3 block w-full text-left text-base font-semibold leading-snug" onClick={() => onOpenStory(story.id)}>
+              {story.headline}
+            </button>
+            <p className="mt-2 text-sm leading-6 text-muted">{story.summary || "Headline-only feed. Open the source for the full article."}</p>
+            <div className="mt-4 space-y-3">
+              {related.slice(0, 3).map((instrument) => (
+                <PatternCorrelation key={`${story.id}-${instrument.id}`} story={story} instrument={instrument} />
+              ))}
             </div>
           </section>
         ))}
       </div>
+
+      {!!quotes.length && (
+        <>
+          <SectionHeader title="Single-name practice" />
+          <div className="space-y-3">
+            {quotes.map((quote) => (
+              <section key={quote.id} className="rounded-lg border border-line bg-panel p-4">
+                <InstrumentRow instrument={quote} embedded />
+                <ObservationChecklist instrument={quote} />
+              </section>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function PatternCorrelation({ story, instrument }: { story: Story; instrument: MarketInstrument }) {
+  const pattern = chartPattern(instrument);
+  const driver = storyDriver(story);
+  const move = instrumentMove(instrument);
+  const link = story.relatedInstruments.includes(instrument.id)
+    ? "Directly tagged by the news feed"
+    : "Macro proxy selected from region and topic";
+
+  return (
+    <div className="rounded-md border border-line bg-panel2 p-3">
+      <InstrumentRow instrument={instrument} embedded />
+      <MiniChart instrument={instrument} />
+      <div className="mt-3 grid gap-2">
+        <ObservationRow label="Link" value={link} />
+        <ObservationRow label="News lens" value={driver} />
+        <ObservationRow label="Chart clue" value={pattern.label} />
+        <ObservationRow label="Read together" value={`${move}. ${pattern.readTogether}`} />
+      </div>
+    </div>
+  );
+}
+
+function ObservationChecklist({ instrument }: { instrument: MarketInstrument }) {
+  const pattern = chartPattern(instrument);
+  return (
+    <div className="mt-3 rounded-md border border-line bg-panel2 p-3">
+      <p className="text-xs font-semibold uppercase text-muted">Observe</p>
+      <ul className="mt-2 space-y-2 text-sm leading-5 text-muted">
+        <li>Price: {instrumentMove(instrument)}</li>
+        <li>Pattern: {pattern.label}</li>
+        <li>Question: did the move continue, fade, or stall after the news window?</li>
+      </ul>
+    </div>
+  );
+}
+
+function ObservationRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="grid grid-cols-[88px_1fr] gap-3 text-sm leading-5">
+      <p className="text-muted">{label}</p>
+      <p>{value}</p>
     </div>
   );
 }
@@ -740,13 +764,15 @@ function SavedScreen({
 
   return (
     <div className="space-y-3">
-      {saved.map(({ savedStory, story }) => (
+      {saved.map(({ savedStory, story }) => {
+        const Headline = story.openInPublisher ? "a" : "button";
+        return (
         <article key={story.id} className="rounded-lg border border-line bg-panel p-4">
-          <button className="w-full text-left" onClick={() => onOpenStory(story.id)}>
+          <Headline className="block w-full text-left" href={story.openInPublisher ? story.sourceUrl : undefined} target={story.openInPublisher ? "_blank" : undefined} rel={story.openInPublisher ? "noopener noreferrer" : undefined} onClick={story.openInPublisher ? undefined : () => onOpenStory(story.id)}>
             <p className="text-xs text-muted">Saved {formatDateTime(savedStory.savedAt)}</p>
             <h2 className="mt-1 text-base font-semibold leading-5">{story.headline}</h2>
-            <p className="mt-2 text-sm leading-5 text-muted">{story.summary}</p>
-          </button>
+            {story.summary && <p className="mt-2 text-sm leading-5 text-muted">{story.summary}</p>}
+          </Headline>
           <div className="mt-3 flex items-center justify-between border-t border-line pt-3">
             <p className="text-xs text-muted">{story.source}</p>
             <IconButton label="Remove saved story" onClick={() => onRemove(story.id)}>
@@ -754,7 +780,7 @@ function SavedScreen({
             </IconButton>
           </div>
         </article>
-      ))}
+      ); })}
     </div>
   );
 }
@@ -780,7 +806,7 @@ function SettingsScreen({
           <div>
             <h2 className="text-base font-semibold">Prototype data mode</h2>
             <p className="mt-2 text-sm leading-6 text-muted">
-              Current coverage: {dataModeLabel(dataMode)}. NSE, Twelve Data and FRED provide market data. RBI and Federal Reserve provide official releases. Quotes without a verified source show unavailable.
+              Current coverage: {dataModeLabel(dataMode)}. NSE, Twelve Data and FRED provide market data. Mint, Economic Times, NYT and BBC provide news; RBI and Federal Reserve provide official releases. Quotes without a verified source show unavailable.
             </p>
           </div>
         </div>
@@ -911,6 +937,105 @@ function MiniChart({ instrument }: { instrument: MarketInstrument }) {
   );
 }
 
+function relatedInstrumentIds(story: Story) {
+  if (story.relatedInstruments.length) {
+    return story.relatedInstruments;
+  }
+
+  if (story.geography === "India") {
+    return story.category === "central banks" ? ["nifty50", "usdinr"] : ["nifty50", "sensex", "usdinr"];
+  }
+
+  if (story.geography === "US") {
+    return story.category === "central banks" ? ["us10y", "sp500", "nasdaq"] : ["sp500", "nasdaq", "us10y"];
+  }
+
+  return story.category === "geopolitics" ? ["brent", "gold", "usdinr"] : ["sp500", "nifty50", "brent"];
+}
+
+function storyDriver(story: Story) {
+  if (story.category === "central banks") return "Rates, liquidity, and discount-rate expectations";
+  if (story.category === "companies") return "Company-specific expectations versus sector sympathy";
+  if (story.category === "markets") return "Positioning, breadth, and risk appetite";
+  if (story.category === "geopolitics") return "Supply risk, safe-haven demand, and currency pressure";
+  if (story.category === "technology") return "Growth expectations and mega-cap leadership";
+  if (story.category === "policy") return "Rule changes, fiscal impulse, and compliance costs";
+  return "Growth, inflation, currency, and earnings expectations";
+}
+
+function instrumentMove(instrument: MarketInstrument) {
+  if (instrument.value === null || instrument.change === null) {
+    return "No usable price reaction yet";
+  }
+
+  const direction = instrument.change > 0 ? "up" : instrument.change < 0 ? "down" : "flat";
+  const percent = instrument.changePercent === undefined ? "" : `, ${Math.abs(instrument.changePercent).toFixed(2)}%`;
+  return `${instrument.symbol} is ${direction} ${formatNumber(Math.abs(instrument.change))}${percent}`;
+}
+
+function chartPattern(instrument: MarketInstrument) {
+  const history = instrument.history;
+  if (history.length < 3) {
+    const direction = (instrument.change ?? 0) > 0 ? "positive quote reaction" : (instrument.change ?? 0) < 0 ? "negative quote reaction" : "flat quote reaction";
+    return {
+      label: `No chart history, ${direction}`,
+      readTogether: "Use the current quote as the first clue, then wait for follow-through before calling it a pattern."
+    };
+  }
+
+  const values = history.map((point) => point.value);
+  const first = values[0];
+  const last = values.at(-1)!;
+  const previous = values.at(-2)!;
+  const high = Math.max(...values);
+  const low = Math.min(...values);
+  const totalMove = ((last - first) / first) * 100;
+  const latestMove = ((last - previous) / previous) * 100;
+  const range = ((high - low) / first) * 100;
+  const nearHigh = high !== low && (high - last) / (high - low) < 0.2;
+  const nearLow = high !== low && (last - low) / (high - low) < 0.2;
+
+  if (Math.abs(totalMove) < 0.7 && range < 2) {
+    return {
+      label: "Tight range",
+      readTogether: "The market has not strongly repriced the news yet; watch for a break above or below the range."
+    };
+  }
+
+  if (totalMove > 0 && latestMove < -0.3) {
+    return {
+      label: "Uptrend losing momentum",
+      readTogether: "The first reaction was positive, but the latest bar is fading; check whether the news was already priced in."
+    };
+  }
+
+  if (totalMove < 0 && latestMove > 0.3) {
+    return {
+      label: "Downtrend bounce",
+      readTogether: "The larger move is still weak, but the latest bar is repairing; separate relief from a real reversal."
+    };
+  }
+
+  if (totalMove > 0 && nearHigh) {
+    return {
+      label: "Trend continuation near highs",
+      readTogether: "The chart is accepting the news positively; look for higher lows after the headline impulse."
+    };
+  }
+
+  if (totalMove < 0 && nearLow) {
+    return {
+      label: "Trend continuation near lows",
+      readTogether: "The chart is still discounting the news negatively; wait for stabilization before assuming reversal."
+    };
+  }
+
+  return {
+    label: totalMove >= 0 ? "Choppy upward drift" : "Choppy downward drift",
+    readTogether: "The direction exists, but conviction is mixed; compare the next news update with the next close."
+  };
+}
+
 function DetailBlock({ title, items }: { title: string; items: string[] }) {
   return (
     <section className="rounded-lg border border-line bg-panel p-4">
@@ -989,19 +1114,6 @@ function MetaRow({ label, value }: { label: string; value: string }) {
       <dd className="max-w-[62%] text-right text-ink">{value}</dd>
     </div>
   );
-}
-
-function moveWatchItem(list: WatchInstrument[], id: string, direction: -1 | 1) {
-  const index = list.findIndex((item) => item.id === id);
-  const nextIndex = index + direction;
-  if (index < 0 || nextIndex < 0 || nextIndex >= list.length) {
-    return list;
-  }
-
-  const copy = [...list];
-  const [item] = copy.splice(index, 1);
-  copy.splice(nextIndex, 0, item);
-  return copy;
 }
 
 function formatNumber(value: number) {

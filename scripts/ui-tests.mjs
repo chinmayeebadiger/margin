@@ -61,6 +61,8 @@ try {
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     let newsAvailable = true;
+    let indianNewsAvailable = false;
+    const indianStory = { ...story, id: "qa-indian-publisher", headline: "Indian market feed test", summary: "", source: "The Economic Times", sourceUrl: "https://economictimes.indiatimes.com/markets/test.cms", sourceAccess: "metadata_only", openInPublisher: true, relatedInstruments: [] };
     await page.route("**/api/**", async (route) => {
       const name = new URL(route.request().url()).pathname;
       const payload = {
@@ -83,7 +85,7 @@ try {
         ];
       if (name.endsWith("watchlist")) payload.instruments = [];
       if (name.endsWith("calendar")) payload.events = [];
-      if (name.endsWith("news")) payload.stories = newsAvailable ? [story] : [];
+      if (name.endsWith("news")) payload.stories = newsAvailable ? [story, ...(indianNewsAvailable ? [indianStory] : [])] : [];
       await route.fulfill({ json: payload });
     });
     await page.goto(baseUrl);
@@ -112,6 +114,13 @@ try {
       () => document.documentElement.scrollWidth > window.innerWidth
     );
     assert.equal(overflow, false, `Horizontal overflow at ${viewport.width}`);
+    indianNewsAvailable = true;
+    await page.getByRole("button", { name: "Brief", exact: true }).click();
+    await page.getByRole("button", { name: "Refresh data" }).click();
+    const indianLink = page.getByRole("link", { name: /Indian market feed test/ });
+    await expect(indianLink).toHaveAttribute("href", indianStory.sourceUrl);
+    await expect(indianLink).toHaveAttribute("target", "_blank");
+    await page.locator("article").filter({ has: indianLink }).getByRole("button", { name: "Save story", exact: true }).click();
     await page.getByRole("button", { name: "Watch", exact: true }).click();
     await expect(
       page.getByRole("button", { name: "Remove instrument", exact: true })
@@ -131,6 +140,7 @@ try {
       page.getByRole("button", { name: "Remove instrument", exact: true })
     ).toHaveCount(0);
     await page.getByRole("button", { name: "Saved", exact: true }).click();
+    await expect(page.getByRole("link", { name: /Indian market feed test/ })).toHaveAttribute("href", indianStory.sourceUrl);
     await expect(
       page.getByRole("heading", { name: story.headline })
     ).toBeVisible();

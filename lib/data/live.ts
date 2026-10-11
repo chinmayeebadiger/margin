@@ -899,25 +899,25 @@ async function fredSeriesToInstrument(
   };
 }
 
-async function fetchFeedItems(feedUrls: string[], notes: string[]) {
-  const allItems: RssItem[] = [];
-
-  for (const feedUrl of feedUrls) {
+async function fetchFeedItems(feedUrls: string[], notes: string[], allowedHosts = ["rbi.org.in", "federalreserve.gov"]) {
+  const batches = await Promise.all(feedUrls.map(async (feedUrl): Promise<RssItem[]> => {
     try {
       const response = await safeFetch(new URL(feedUrl), 1800);
       if (!response?.ok) {
         notes.push(`${feedUrl} is unavailable.`);
-        continue;
+        return [];
       }
 
       const parsed = xmlParser.parse(await response.text()) as RssFeed;
-      allItems.push(...asArray(parsed.rss?.channel?.item));
+      return asArray(parsed.rss?.channel?.item);
     } catch (error) {
       notes.push(
         `${feedUrl} failed: ${error instanceof Error ? error.message : "unknown error"}.`
       );
+      return [];
     }
-  }
+  }));
+  const allItems = batches.flat();
 
   return allItems
     .filter(
@@ -926,7 +926,7 @@ async function fetchFeedItems(feedUrls: string[], notes: string[]) {
         item.link &&
         item.pubDate &&
         Number.isFinite(Date.parse(item.pubDate)) &&
-        isOfficialLink(item.link)
+        isAllowedLink(item.link, allowedHosts)
     )
     .filter(
       (item, index, items) =>
@@ -1055,12 +1055,12 @@ function stableId(value: string) {
   return createHash("sha256").update(value).digest("hex").slice(0, 20);
 }
 
-function isOfficialLink(value: string) {
+function isAllowedLink(value: string, allowedHosts: string[]) {
   try {
     const url = new URL(value);
     return (
       url.protocol === "https:" &&
-      ["rbi.org.in", "federalreserve.gov"].some(
+      allowedHosts.some(
         (host) => url.hostname === host || url.hostname.endsWith(`.${host}`)
       )
     );
@@ -1071,55 +1071,75 @@ function isOfficialLink(value: string) {
 
 export async function getNewsData() {
   const notes: string[] = [];
-  const [india, us] = await Promise.all([
-    fetchFeedItems(rbiFeeds, notes),
-    fetchFeedItems(fedFeeds, notes)
-  ]);
-  const stories: Story[] = [
-    ...india.slice(0, 6).map((item) => ({ item, geography: "India" as const })),
-    ...us.slice(0, 6).map((item) => ({ item, geography: "US" as const }))
-  ]
+  const sources: Array<{
+    name: string;
+    feeds: string[];
+    hosts: string[];
+    geography: Story["geography"];
+    category: Story["category"];
+    access: Story["sourceAccess"];
+    related: string[];
+    headlineOnly?: boolean;
+  }> = [
+    { name: "Reserve Bank of India", feeds: rbiFeeds, hosts: ["rbi.org.in"], geography: "India", category: "central banks", access: "official_release", related: ["nifty50", "usdinr"] },
+    { name: "Federal Reserve", feeds: fedFeeds, hosts: ["federalreserve.gov"], geography: "US", category: "central banks", access: "official_release", related: ["us10y", "sp500", "nasdaq"] },
+    { name: "The New York Times", feeds: ["https://rss.nytimes.com/services/xml/rss/nyt/Business.xml"], hosts: ["nytimes.com"], geography: "Global", category: "economy", access: "metadata_only", related: [] },
+    { name: "BBC News", feeds: ["https://feeds.bbci.co.uk/news/business/rss.xml"], hosts: ["bbc.co.uk", "bbc.com"], geography: "Global", category: "economy", access: "metadata_only", related: [] },
+    { name: "Mint", feeds: ["https://www.livemint.com/rss/markets"], hosts: ["livemint.com"], geography: "India", category: "markets", access: "metadata_only", related: [] },
+    { name: "The Economic Times", feeds: ["https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms"], hosts: ["economictimes.indiatimes.com"], geography: "India", category: "markets", access: "metadata_only", related: [], headlineOnly: true }
+  ];
+  const feeds = await Promise.all(sources.map(async (source) => ({ source, items: await fetchFeedItems(source.feeds, notes, source.hosts) })));
+  const stories: Story[] = feeds
+    .flatMap(({ source, items }) => items.slice(0, 4).map((item) => ({ source, item })))
+    .filter(({ item }, index, items) => items.findIndex((other) => canonicalNewsLink(other.item.link!) === canonicalNewsLink(item.link!)) === index)
     .sort((a, b) => Date.parse(b.item.pubDate!) - Date.parse(a.item.pubDate!))
-    .map(({ item, geography }, index) => {
-      const headline = plainText(item.title ?? "Official release");
-      const summary =
-        plainText(item.description ?? "").slice(0, 1000) ||
-        "Read the official release for the full details.";
+    .map(({ item, source }, index) => {
+      const headline = plainText(item.title ?? "News article");
+      const summary = source.headlineOnly ? "" :
+        plainText(item.description ?? "").slice(0, source.access === "official_release" ? 1000 : 280) ||
+        "Read the source for the full details.";
+      const sourceUrl = canonicalNewsLink(item.link!);
       return {
-        id: stableId(item.link!),
+        id: stableId(sourceUrl),
         rank: index + 1,
         headline,
         summary,
-        geography,
-        category: "central banks",
+        geography: source.geography,
+        category: source.category,
         readMinutes: Math.max(1, Math.ceil(summary.split(/\s+/).length / 200)),
-        source:
-          geography === "India" ? "Reserve Bank of India" : "Federal Reserve",
-        sourceUrl: item.link!,
+        source: source.name,
+        sourceUrl,
+        openInPublisher: source.headlineOnly,
         publishedAt: new Date(item.pubDate!).toISOString(),
         claimBasis: "reported",
-        sourceAccess: "official_release",
-        summaryVersion: "official-rss-v1",
+        sourceAccess: source.access,
+        summaryVersion: "source-rss-v2",
         whatHappened: [summary],
         reportedDrivers: [],
         potentialImplications: [],
-        relatedInstruments:
-          geography === "India"
-            ? ["nifty50", "usdinr"]
-            : ["us10y", "sp500", "nasdaq"]
+        relatedInstruments: source.related
       };
     });
   return {
     stories,
     fetchedAt: new Date().toISOString(),
     status:
-      india.length && us.length
+      feeds.every(({ items }) => items.length > 0)
         ? ("live" as const)
         : stories.length
           ? ("mixed" as const)
           : ("unavailable" as const),
     notes
   };
+}
+
+function canonicalNewsLink(value: string) {
+  const url = new URL(value);
+  url.hash = "";
+  for (const key of [...url.searchParams.keys()]) {
+    if (key.startsWith("utm_") || ["at_medium", "at_campaign"].includes(key)) url.searchParams.delete(key);
+  }
+  return url.toString();
 }
 
 function plainText(value: string) {

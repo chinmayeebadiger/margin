@@ -11,7 +11,8 @@
     "phase2:proof": "node scripts/phase2-data-proof.mjs",
     "test:data": "node scripts/data-tests.mjs",
     "test:ui": "node scripts/ui-tests.mjs",
-    "test:pwa": "node scripts/pwa-tests.mjs"
+    "test:pwa": "node scripts/pwa-tests.mjs",
+    "test:brief": "node scripts/brief-tests.mjs"
   },
   "dependencies": {
     "fast-xml-parser": "^5.11.2",

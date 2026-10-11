@@ -212,6 +212,37 @@ try {
     (await data.getNewsData()).stories.map((story) => story.id)
   );
   assert.equal((await data.getCalendarData()).events.length, 2);
+  globalThis.fetch = async (url) => {
+    const host = new URL(url).hostname;
+    const link = host.includes("livemint") ? "https://www.livemint.com/market/test" : host.includes("economictimes") ? "https://economictimes.indiatimes.com/markets/test.cms" : host.includes("nytimes") ? "https://www.nytimes.com/test/business/item" : host.includes("bbci") ? "https://www.bbc.com/news/articles/test?at_medium=RSS&at_campaign=rss" : host.includes("rbi") ? "https://www.rbi.org.in/release/test" : "https://www.federalreserve.gov/release/test";
+    return new Response(`<rss><channel><item><title>Test feed item</title><description>${"Example excerpt. ".repeat(40)}</description><link>${link.replaceAll("&", "&amp;")}</link><pubDate>Fri, 09 Oct 2026 12:00:00 GMT</pubDate></item><item><title>Untrusted redirect</title><link>https://example.com/not-a-publisher</link><pubDate>Fri, 09 Oct 2026 13:00:00 GMT</pubDate></item></channel></rss>`);
+  };
+  const publishers = await data.getNewsData();
+  assert.equal(publishers.status, "live");
+  assert.equal(publishers.stories.length, 6);
+  const mint = publishers.stories.find((story) => story.source === "Mint");
+  const et = publishers.stories.find((story) => story.source === "The Economic Times");
+  assert.equal(mint.geography, "India");
+  assert.equal(et.geography, "India");
+  assert.equal(mint.category, "markets");
+  assert.equal(et.openInPublisher, true);
+  assert.equal(et.summary, "");
+  assert.ok(mint.summary.length <= 280);
+  const nyt = publishers.stories.find((story) => story.source === "The New York Times");
+  const bbc = publishers.stories.find((story) => story.source === "BBC News");
+  assert.equal(nyt.sourceAccess, "metadata_only");
+  assert.ok(nyt.summary.length <= 280);
+  assert.equal(nyt.category, "economy");
+  assert.deepEqual(nyt.relatedInstruments, []);
+  assert.equal(bbc.sourceUrl, "https://www.bbc.com/news/articles/test");
+  const workingFeeds = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    if (String(url).includes("nytimes")) throw new Error("publisher outage");
+    return workingFeeds(url, options);
+  };
+  const publisherOutage = await data.getNewsData();
+  assert.equal(publisherOutage.status, "mixed");
+  assert.equal(publisherOutage.stories.length, 5);
   let calls = 0;
   await Promise.all([
     cachedData("test", 1000, async () => ++calls),

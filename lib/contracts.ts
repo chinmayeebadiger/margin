@@ -41,6 +41,7 @@ export type Story = {
   source: string;
   sourceUrl: string;
   publishedAt: string;
+  openInPublisher?: boolean;
   claimBasis: ClaimBasis;
   sourceAccess: "metadata_only" | "linked_article" | "official_release" | "licensed_content";
   summaryVersion: string;

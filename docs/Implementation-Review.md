@@ -19,7 +19,7 @@ Market Brief is a Next.js PWA for a short personal market-reading routine, desig
 ## Fixture cleanup implemented in this revision
 
 - Runtime code imports `lib/catalog.ts`, which contains instrument identity and source metadata with null prices. `lib/fixtures.ts` remains as a historical prototype reference and is no longer imported by the running app.
-- Brief articles now come from `/api/news`, using RBI and Federal Reserve RSS. Each story has a source link, publication time, a stable URL-based ID and reported-content labels. Feed descriptions supply the excerpts. The app does not generate explanations of price moves or invent article analysis.
+- Brief articles now come from `/api/news`, using Mint Markets, Economic Times Markets, New York Times Business and BBC Business RSS alongside RBI and Federal Reserve RSS. Each story has a source link, publication time, a stable URL-based ID and reported-content labels. Feed descriptions supply excerpts where supported; Economic Times is headline-only with direct publisher navigation. The app does not generate explanations of price moves or invent article analysis.
 - `/api/watchlist` obtains Reliance and Infosys quotes using NSE `cm_get_stock_quote` and Boeing quotes using Twelve Data. Missing or failed quotes return null values and an unavailable label.
 - Gold and USD/INR daily charts use Twelve Data `time_series`; FRED charts use up to 30 numeric observations. Invalid observations and duplicate daily timestamps are removed. Nifty and Sensex history show unavailable because a supported historical index route is not established.
 - API failures return unavailable rows or empty feeds. Sample prices, sample stories and sample calendar events are no longer used as fallback.
@@ -32,6 +32,10 @@ Market Brief is a Next.js PWA for a short personal market-reading routine, desig
 - PNG icons are provided at 180, 192 and 512 pixels. Safari's apple-touch icon uses the 180-pixel PNG. The inert notification button was replaced by refresh.
 
 ## Data flow and files to study
+
+Brief responsiveness update: the initial Brief renders only the first six stories in the existing newest-first order. `Load more` reveals six additional stories at a time from the fetched batch, without a further news request. Read progress follows the currently revealed stories; tab navigation preserves the expanded list and refresh resets it to six. Each API response updates its screen as soon as it finishes, so slow market/watchlist requests no longer delay news rendering. Fetch cleanup aborts obsolete requests. RSS URLs within each provider are fetched concurrently rather than sequentially. The server still retrieves up to 24 source-backed stories; this is progressive display, not a claim of a new importance-ranking engine or an unlimited historical archive.
+
+Verification: `test:brief` passed with the other API responses held open, proving that six news rows render independently. It also checked 6/12/14-row expansion, no additional news requests when expanding, correct read counts, preservation across tabs and reset on refresh. Data tests, mobile/desktop UI checks, TypeScript and the production build passed. The refreshed production prototype is running locally on port 3000.
 
 1. `lib/catalog.ts`: supported instruments and starter watchlist. These are static identities, not fixture quotes.
 2. `lib/contracts.ts`: market, story, calendar and persisted-state contracts. Quote value and change may be null.
@@ -53,6 +57,18 @@ Credentials belong in `.env.local`: `TWELVE_DATA_API_KEY` and `FRED_API_KEY`. Th
 | [FRED](https://fred.stlouisfed.org/docs/api/fred/) | S&P 500, Nasdaq, Brent spot, US 10-year yield and daily history | Existing FRED key |
 | [RBI official RSS](https://www.rbi.org.in/Scripts/rss.aspx) | Indian policy/banking releases and article excerpts | None |
 | [Federal Reserve official RSS](https://www.federalreserve.gov/feeds/feeds.htm) | US policy/banking releases and article excerpts | None |
+| [New York Times Business RSS](https://rss.nytimes.com/services/xml/rss/nyt/Business.xml) | Business news headlines and publisher excerpts | None |
+| [BBC Business RSS](https://feeds.bbci.co.uk/news/business/rss.xml) | Business news headlines and publisher excerpts | None |
+| [Mint Markets RSS](https://www.livemint.com/rss/markets) | Indian market headlines and publisher excerpts | None |
+| [Economic Times Markets RSS](https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms) | Indian market headlines with direct publisher links | None |
+
+Publisher expansion on 11 October: NYT Business and BBC Business feeds were verified as accessible and added to the Brief. Up to four stories per source are merged by publication time. Article URLs are checked against the specific publisher's domains; common RSS tracking parameters are removed for stable saved-story IDs. Newsroom articles use `metadata_only` access and at most 280 characters of feed description. No publisher images or full articles are fetched. A newsroom article is not labelled as an official government release, and related price moves are not guessed. Source outages produce partial coverage while other feeds continue. These feed requests require no new key or paid API; full-article access remains subject to the publisher's subscription and usage terms.
+
+Publisher validation: data tests and the production build passed after this expansion. Added tests check publisher-specific URL rejection, newsroom attribution/access type, excerpt length, tracking removal and partial coverage during a publisher outage.
+
+Indian publisher expansion: Mint Markets and Economic Times Markets were verified as valid publisher feeds, and each contributes up to four stories to the Brief. Both use `India` geography and `markets` category. Selecting four items per source before merging prevents high-volume international feeds from removing the Indian publisher allocation. The full six-source Brief contains up to 24 stories. Indian publisher feeds do not require API keys.
+
+Mint's [RSS terms](https://www.livemint.com/rss) and Economic Times' [RSS terms](https://economictimes.indiatimes.com/rss.cms) support personal, noncommercial use. Economic Times requires direct linking without intermediate pages, so its headline opens the publisher website from both Brief and Saved. Its article body and feed description are not copied into an internal detail page. Commercial reuse would require revisiting publisher permissions.
 
 No paid source or broker service has been added. An uncached full refresh uses at most five Twelve Data requests: two quotes, two daily-history requests and one Boeing quote. Personal prototype use is supported by caching; public traffic across multiple server instances could still exceed an account's free quota. This is not a claim of unlimited free use.
 
@@ -62,7 +78,7 @@ NSE's published MCP terms restrict usage to informational/educational, noncommer
 
 Automated data tests cover NSE JSON/SSE parsing, null/malformed quotes, negative changes, IST timestamps, index and stock tool responses, provider outages, partial success, official RSS URL/date validation, duplicate release removal, stable IDs, request coalescing and offline API JSON responses. Browser tests exercise 430 x 932 and 1440 x 1000 viewports, a news-only Brief, saving/reading, null quotes, unavailable history, empty-watchlist persistence and saved content retention. Screenshot artifacts are generated under `/tmp/market-brief-qa`.
 
-Commands: `npm run test:data`, `npm run test:ui`, `npm run test:pwa`, `npm run check`, `npm audit --omit=dev`.
+Commands: `npm run test:data`, `npm run test:ui`, `npm run test:brief`, `npm run test:pwa`, `npm run check`, `npm audit --omit=dev`.
 
 Final results: data tests, production build/TypeScript, mobile/desktop browser checks and the production PWA offline test passed. The offline test verified an installed service worker, an offline shell reload, HTTP 503 JSON for `/api/news`, and PNG/manifest icon sizes. `npm audit --omit=dev` reported zero vulnerabilities.
 
@@ -73,7 +89,7 @@ Limitations are explicit:
 - Sensex has no verified free adapter. A probe of BSE's website data endpoint returned Access Denied. The app displays unavailable and does not substitute an ETF or an unofficial proxy.
 - NSE connectivity is intermittent in this environment. Its official stock schema and a Reliance quote were verified directly. The app uses a scoped IPv4 transport and bounded requests, but availability remains dependent on NSE's edge. Mock tests establish parsing and failure behavior; they are not evidence of uninterrupted live service.
 - Nifty/Sensex historical charts are unavailable. There are no fabricated chart points.
-- Brief currently covers official central-bank releases, not a comprehensive company/geopolitical news service. Broad news discovery remains a separate source-coverage gap.
+- Brief covers Mint/ET market feeds, NYT/BBC business feeds and official central-bank releases. It is a limited feed selection, not comprehensive news coverage.
 - The calendar currently lists published official releases, not a verified future CPI/earnings schedule. No forecast, actual or scheduled time is invented.
 - Watchlist search covers the three supported starter symbols; arbitrary ticker lookup is not implemented.
 - Physical iPhone Safari Add to Home Screen, standalone launch and offline installation require device QA. Chromium viewport checks are not Safari device certification.

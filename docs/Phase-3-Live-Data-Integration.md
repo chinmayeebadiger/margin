@@ -8,6 +8,12 @@ The historical implementation notes below describe the earlier fixture-fallback 
 
 Refresh, saved article snapshots, independent feed loading, IST timestamp parsing, quota-protecting caches, offline API JSON errors, watchlist persistence and PNG PWA icons are also implemented.
 
+Publisher expansion: `/api/news` now also reads New York Times Business and BBC Business RSS, with publisher-specific URL validation, short attributed excerpts, stable URL IDs and source-isolated failure handling. No new API key is required. The full implementation review records current news coverage and access limits.
+
+Indian coverage: Mint Markets and Economic Times Markets are now included, with up to four stories each labelled India/markets. Economic Times headlines open the publisher directly from Brief and Saved. The combined feed supports up to 24 stories across six sources without new keys.
+
+Brief responsiveness: six stories initially, six more per `Load more` click, and news updates immediately when its endpoint returns instead of waiting for other API routes. Provider RSS URLs are fetched in parallel. `npm run test:brief` verifies the slow-provider case and progressive display.
+
 Phase 3 wires proven providers into server-side app routes while preserving fixture fallback and visible data labels.
 
 ## Implemented
