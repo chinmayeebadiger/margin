@@ -219,8 +219,8 @@ export async function getMarketData(): Promise<MarketDataPayload> {
       );
     } else {
       for (const [id, target] of Object.entries(nseIndexTargets)) {
-        const fixture = byId.get(id);
-        if (!fixture) {
+        const catalogInstrument = byId.get(id);
+        if (!catalogInstrument) {
           continue;
         }
 
@@ -230,12 +230,12 @@ export async function getMarketData(): Promise<MarketDataPayload> {
           notes
         );
         if (!quote) {
-          notes.push(`${fixture.name}: NSE MCP did not return a usable quote.`);
+          notes.push(`${catalogInstrument.name}: NSE MCP did not return a usable quote.`);
           continue;
         }
 
         replaceInstrument(instruments, id, {
-          ...fixture,
+          ...catalogInstrument,
           symbol: target.indexName,
           value: quote.value,
           change: quote.change ?? null,
@@ -273,8 +273,8 @@ export async function getMarketData(): Promise<MarketDataPayload> {
     } else {
       await Promise.all(
         Object.entries(liveTargets).map(async ([id, target]) => {
-          const fixture = byId.get(id);
-          if (!fixture) {
+          const catalogInstrument = byId.get(id);
+          if (!catalogInstrument) {
             return;
           }
 
@@ -283,7 +283,7 @@ export async function getMarketData(): Promise<MarketDataPayload> {
             twelveKey
           );
           if (!quote || quote.code || quote.message) {
-            notes.push(`${fixture.name}: Twelve Data quote unavailable.`);
+            notes.push(`${catalogInstrument.name}: Twelve Data quote unavailable.`);
             return;
           }
 
@@ -299,12 +299,12 @@ export async function getMarketData(): Promise<MarketDataPayload> {
           );
 
           if (value === undefined || value <= 0) {
-            notes.push(`${fixture.name}: malformed Twelve Data quote.`);
+            notes.push(`${catalogInstrument.name}: malformed Twelve Data quote.`);
             return;
           }
 
           replaceInstrument(instruments, id, {
-            ...fixture,
+            ...catalogInstrument,
             symbol: quote.symbol ?? target.providerSymbol,
             value,
             change: change ?? null,
@@ -337,13 +337,13 @@ export async function getMarketData(): Promise<MarketDataPayload> {
     } else {
       await Promise.all(
         Object.entries(fredTargets).map(async ([id, target]) => {
-          const fixture = byId.get(id);
-          if (!fixture) {
+          const catalogInstrument = byId.get(id);
+          if (!catalogInstrument) {
             return;
           }
 
           const replacement = await fredSeriesToInstrument(
-            fixture,
+            catalogInstrument,
             target,
             fredKey,
             fetchedAt
@@ -352,7 +352,7 @@ export async function getMarketData(): Promise<MarketDataPayload> {
             replaceInstrument(instruments, id, replacement);
           } else {
             notes.push(
-              `${fixture.name}: FRED returned no usable observations.`
+              `${catalogInstrument.name}: FRED returned no usable observations.`
             );
           }
         })
@@ -837,7 +837,7 @@ async function fetchFredObservations(
 }
 
 async function fredSeriesToInstrument(
-  fixture: MarketInstrument,
+  catalogInstrument: MarketInstrument,
   target: {
     seriesId: string;
     sourceUrl: string;
@@ -869,10 +869,10 @@ async function fredSeriesToInstrument(
     previous.value === 0 ? undefined : (change / previous.value) * 100;
 
   return {
-    ...fixture,
+    ...catalogInstrument,
     value: latest.value,
     change,
-    changePercent: fixture.kind === "yield" ? undefined : changePercent,
+    changePercent: catalogInstrument.kind === "yield" ? undefined : changePercent,
     unit: target.unit,
     session: target.session,
     status: "last_session",

@@ -835,7 +835,7 @@ function SettingsScreen({
           <MetaRow label="Timezone" value="Asia/Kolkata" />
           <MetaRow label="Notifications" value="Off" />
           <MetaRow label="Auth" value="Not required" />
-          <MetaRow label="Data fetched" value={lastFetchedAt ? formatDateTime(lastFetchedAt) : "Fixture fallback"} />
+          <MetaRow label="Data fetched" value={lastFetchedAt ? formatDateTime(lastFetchedAt) : "Unavailable"} />
         </dl>
       </section>
 
@@ -884,33 +884,45 @@ function BottomNav({ activeTab, onChange }: { activeTab: TabId; onChange: (tab: 
 }
 
 function InstrumentRow({ instrument, embedded = false }: { instrument: MarketInstrument; embedded?: boolean }) {
+  const unavailable = isUnavailableInstrument(instrument);
   const positive = (instrument.change ?? 0) >= 0;
   const changeText =
-    instrument.change === null ? "" : instrument.kind === "yield"
+    unavailable || instrument.change === null ? "" : instrument.kind === "yield"
       ? `${positive ? "+" : ""}${(instrument.change * 100).toFixed(0)} bp`
       : `${positive ? "+" : ""}${formatNumber(instrument.change)}${instrument.changePercent !== undefined ? ` (${positive ? "+" : ""}${instrument.changePercent.toFixed(2)}%)` : ""}`;
+  const tradingViewUrl = getTradingViewUrl(instrument);
 
   return (
     <div className={embedded ? "py-3 first:pt-0 last:pb-0" : "px-4 py-3"}>
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
-          <p className="truncate text-sm font-semibold">{instrument.name}</p>
+          <a
+            className="inline-flex max-w-full items-center gap-1 text-sm font-semibold underline-offset-4 hover:underline"
+            href={tradingViewUrl}
+            target="_blank"
+            rel="noreferrer"
+          >
+            <span className="truncate">{instrument.name}</span>
+            <ExternalLink size={13} className="shrink-0 text-muted" />
+          </a>
           <p className="mt-0.5 text-xs text-muted">{instrument.symbol} · {instrument.session}</p>
         </div>
         <div className="shrink-0 text-right">
-          <p className="tabular text-sm font-semibold">{instrument.value === null ? "Unavailable" : `${formatNumber(instrument.value)} ${instrument.unit}`}</p>
+          <p className="tabular text-sm font-semibold">{unavailable || instrument.value === null ? "Unavailable" : `${formatNumber(instrument.value)} ${instrument.unit}`}</p>
           <p className={`tabular text-xs ${positive ? "text-up" : "text-down"}`}>{changeText}</p>
         </div>
       </div>
       <p className="mt-2 text-[11px] leading-4 text-muted">
-        {instrument.meta.sourceName} · {instrument.meta.observedAt ? formatObservation(instrument.meta.observedAt) : "No observation"} · {instrument.meta.availability === "stale" ? "Last available quote" : instrument.meta.delayLabel}
+        {unavailable
+          ? "Unavailable · No verified source"
+          : `${instrument.meta.sourceName} · ${instrument.meta.observedAt ? formatObservation(instrument.meta.observedAt) : "No observation"} · ${instrument.meta.availability === "stale" ? "Last available quote" : instrument.meta.delayLabel}`}
       </p>
     </div>
   );
 }
 
 function MiniChart({ instrument }: { instrument: MarketInstrument }) {
-  if (instrument.history.length < 2) return <p className="mt-3 text-xs text-muted">Price history unavailable</p>;
+  if (isUnavailableInstrument(instrument) || instrument.history.length < 2) return <p className="mt-3 text-xs text-muted">Price history unavailable</p>;
   const values = instrument.history.map((point) => point.value);
   const min = Math.min(...values);
   const max = Math.max(...values);
@@ -964,7 +976,7 @@ function storyDriver(story: Story) {
 }
 
 function instrumentMove(instrument: MarketInstrument) {
-  if (instrument.value === null || instrument.change === null) {
+  if (isUnavailableInstrument(instrument) || instrument.value === null || instrument.change === null) {
     return "No usable price reaction yet";
   }
 
@@ -974,6 +986,13 @@ function instrumentMove(instrument: MarketInstrument) {
 }
 
 function chartPattern(instrument: MarketInstrument) {
+  if (isUnavailableInstrument(instrument)) {
+    return {
+      label: "Unavailable",
+      readTogether: "There is no verified quote to read yet, so do not infer a market reaction from this row."
+    };
+  }
+
   const history = instrument.history;
   if (history.length < 3) {
     const direction = (instrument.change ?? 0) > 0 ? "positive quote reaction" : (instrument.change ?? 0) < 0 ? "negative quote reaction" : "flat quote reaction";
@@ -1113,6 +1132,33 @@ function MetaRow({ label, value }: { label: string; value: string }) {
       <dt className="text-muted">{label}</dt>
       <dd className="max-w-[62%] text-right text-ink">{value}</dd>
     </div>
+  );
+}
+
+function getTradingViewUrl(instrument: MarketInstrument) {
+  const symbolById: Record<string, string> = {
+    nifty50: "NSE:NIFTY",
+    sensex: "BSE:SENSEX",
+    sp500: "SP:SPX",
+    nasdaq: "NASDAQ:IXIC",
+    gold: "OANDA:XAUUSD",
+    brent: "TVC:UKOIL",
+    usdinr: "FX_IDC:USDINR",
+    us10y: "TVC:US10Y",
+    "reliance-nse": "NSE:RELIANCE",
+    "infy-nse": "NSE:INFY",
+    "ba-nyse": "NYSE:BA"
+  };
+  const symbol = symbolById[instrument.id] ?? instrument.symbol.replaceAll("/", "");
+  return `https://www.tradingview.com/chart/?symbol=${encodeURIComponent(symbol)}`;
+}
+
+function isUnavailableInstrument(instrument: MarketInstrument) {
+  return (
+    instrument.meta.availability === "unavailable" ||
+    instrument.meta.availability === "fixture" ||
+    instrument.status === "fixture" ||
+    instrument.meta.sourceName.toLowerCase().includes("fixture")
   );
 }
 

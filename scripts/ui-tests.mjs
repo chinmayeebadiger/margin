@@ -121,24 +121,18 @@ try {
     await expect(indianLink).toHaveAttribute("href", indianStory.sourceUrl);
     await expect(indianLink).toHaveAttribute("target", "_blank");
     await page.locator("article").filter({ has: indianLink }).getByRole("button", { name: "Save story", exact: true }).click();
-    await page.getByRole("button", { name: "Watch", exact: true }).click();
-    await expect(
-      page.getByRole("button", { name: "Remove instrument", exact: true })
-    ).toHaveCount(3);
-    for (let index = 0; index < 3; index++)
-      await page
-        .getByRole("button", { name: "Remove instrument", exact: true })
-        .first()
-        .click();
+    await page.getByRole("button", { name: "Learn", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Correlation lab" })).toBeVisible();
+    await expect(page.getByText("Directly tagged by the news feed")).toBeVisible();
     newsAvailable = false;
     await page.reload();
     await expect(
       page.getByRole("heading", { name: "No articles available" })
     ).toBeVisible();
-    await page.getByRole("button", { name: "Watch", exact: true }).click();
+    await page.getByRole("button", { name: "Learn", exact: true }).click();
     await expect(
-      page.getByRole("button", { name: "Remove instrument", exact: true })
-    ).toHaveCount(0);
+      page.getByRole("heading", { name: "No correlations available" })
+    ).toBeVisible();
     await page.getByRole("button", { name: "Saved", exact: true }).click();
     await expect(page.getByRole("link", { name: /Indian market feed test/ })).toHaveAttribute("href", indianStory.sourceUrl);
     await expect(
@@ -157,7 +151,7 @@ try {
     await context.close();
   }
   console.log(
-    `Passed mobile/desktop: news-only Brief, save/read state, unavailable quotes/history, empty-watchlist persistence, saved article retention, no overflow or runtime errors. Screenshots: ${output}`
+    `Passed mobile/desktop: news-only Brief, save/read state, unavailable quotes/history, correlation learning empty state, saved article retention, no overflow or runtime errors. Screenshots: ${output}`
   );
 } finally {
   await browser.close();
